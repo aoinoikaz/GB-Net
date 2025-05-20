@@ -8,7 +8,7 @@ Rust library for multiplayer game networking.
 - Reliable Messages
 - Large Data Transfer
 - Packet Fragmentation
-- Bit-Packed Serialization
+- Advanced Bit-Packed Serialization
 - Packet Delivery
 - State Synchronization
 - Snapshot Compression
@@ -16,3 +16,4 @@ Rust library for multiplayer game networking.
 - Deterministic Lockstep
 - Congestion Avoidance
 - Fixed Timestep
+
