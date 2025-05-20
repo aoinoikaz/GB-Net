@@ -1,27 +1,26 @@
 use super::reliability::Reliability;
+use super::packet::{Packet, PacketType};
 use std::net::SocketAddr;
 use std::time::Instant;
 use log::info;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChannelType {
-    ReliableOrdered,
-    ReliableUnordered,
+    Reliable,
     Unreliable,
-    Sequenced,
-    ReliableSequenced,
+    Snapshot,
 }
 
 pub type ChannelId = u8;
 
 #[derive(Debug)]
-pub struct Channel {
+pub struct Channel<T: super::serialize::Serialize + Clone> {
     id: ChannelId,
     channel_type: ChannelType,
-    reliability: Reliability,
+    reliability: Reliability<T>,
 }
 
-impl Channel {
+impl<T: super::serialize::Serialize + Clone> Channel<T> {
     pub fn new(id: ChannelId, channel_type: ChannelType) -> Self {
         info!("Creating channel {}: {:?}", id, channel_type);
         Channel {
@@ -31,43 +30,54 @@ impl Channel {
         }
     }
 
-    pub fn prepare_packet(&mut self, packet: super::packet::Packet, addr: SocketAddr) -> super::packet::Packet {
+    pub fn prepare_packet(&mut self, packet: Packet<T>, addr: SocketAddr) -> Packet<T> {
         let mut packet = match self.channel_type {
-            ChannelType::ReliableOrdered | ChannelType::ReliableUnordered | ChannelType::ReliableSequenced => {
-                self.reliability.prepare_packet(packet, addr)
+            ChannelType::Reliable => {
+                let reliable = matches!(packet.packet_type, 
+                    PacketType::Data { data: _, ordered: true } | PacketType::Input(_));
+                self.reliability.prepare_packet(packet, addr, reliable)
             }
-            _ => packet,
+            ChannelType::Snapshot => {
+                self.reliability.prepare_packet(packet, addr, false)
+            }
+            ChannelType::Unreliable => packet,
         };
         packet.header.channel_id = self.id;
         packet
     }
 
-    pub fn on_packet_sent(&mut self, packet: super::packet::Packet, sent_time: Instant, addr: SocketAddr) {
-        if matches!(self.channel_type, ChannelType::ReliableOrdered | ChannelType::ReliableUnordered | ChannelType::ReliableSequenced) {
+    pub fn on_packet_sent(&mut self, packet: Packet<T>, sent_time: Instant, addr: SocketAddr) {
+        if self.channel_type == ChannelType::Reliable {
             self.reliability.on_packet_sent(packet, sent_time, addr);
         }
     }
 
-    pub fn on_packet_received(&mut self, packet: super::packet::Packet, addr: SocketAddr) -> Option<super::packet::Packet> {
+    pub fn on_packet_received(&mut self, packet: Packet<T>, addr: SocketAddr) -> Option<Packet<T>> {
         match self.channel_type {
-            ChannelType::ReliableOrdered => self.reliability.on_packet_received(packet, addr, true),
-            ChannelType::ReliableUnordered => self.reliability.on_packet_received(packet, addr, false),
-            ChannelType::Sequenced | ChannelType::ReliableSequenced => {
-                let is_reliable = matches!(self.channel_type, ChannelType::ReliableSequenced);
-                self.reliability.on_packet_received_sequenced(packet, addr, is_reliable)
+            ChannelType::Reliable => {
+                let ordered = matches!(packet.packet_type, 
+                    PacketType::Data { data: _, ordered: true } | PacketType::Input(_));
+                self.reliability.on_packet_received(packet, addr, ordered)
             }
-            ChannelType::Unreliable => Some(packet),
+            ChannelType::Unreliable => {
+                if matches!(packet.packet_type, PacketType::Data { data: _, ordered: false }) {
+                    self.reliability.on_packet_received_sequenced(packet, addr)
+                } else {
+                    Some(packet)
+                }
+            }
+            ChannelType::Snapshot => self.reliability.on_snapshot_received(packet, addr),
         }
     }
 
     pub fn on_packet_acked(&mut self, sequence: u16, addr: SocketAddr) {
-        if matches!(self.channel_type, ChannelType::ReliableOrdered | ChannelType::ReliableUnordered | ChannelType::ReliableSequenced) {
+        if self.channel_type == ChannelType::Reliable {
             self.reliability.on_packet_acked(sequence, addr);
         }
     }
 
-    pub fn check_retransmissions(&mut self, now: Instant) -> Vec<super::reliability::ReliablePacket> {
-        if matches!(self.channel_type, ChannelType::ReliableOrdered | ChannelType::ReliableUnordered | ChannelType::ReliableSequenced) {
+    pub fn check_retransmissions(&mut self, now: Instant) -> Vec<super::reliability::ReliablePacket<T>> {
+        if self.channel_type == ChannelType::Reliable {
             self.reliability.check_retransmissions(now)
         } else {
             Vec::new()
