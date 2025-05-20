@@ -2,7 +2,7 @@
 
 Rust library for multiplayer game networking.
 
-### Features ###
+## Features ##
 
 - Connections
 - Reliable Messages
