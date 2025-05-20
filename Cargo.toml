@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.40", features = ["full"] }
-log = "0.4"
-env_logger = "0.11"
-rand = "0.8"
-thiserror = "1.0"
-bincode = "1.3"
+tokio = { version = "1.40", features = ["net", "time", "rt", "sync"] } # Async UDP, timers, concurrency
+log = "0.4" # Debug logging
+env_logger = "0.11" # Logging setup
+rand = "0.8" # Random connection IDs
+thiserror = "1.0" # Error handling
+gbnet_derive = { path = "./gbnet_derive" } # Macro for Serialize/Deserialize
 
 [features]
-metrics = []
+metrics = [] # Debugging metrics
+
+[workspace]
+members = ["gbnet_derive"]
