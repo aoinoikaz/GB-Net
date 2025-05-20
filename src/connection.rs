@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use log::{info, warn};
-use rand::RngCore; // Changed from Rng to RngCore for gen_u32
+use rand::RngCore;
 
 #[derive(Debug, PartialEq)]
 pub enum ConnectionState {
@@ -23,7 +23,7 @@ pub struct Connection {
     pub sequence: u16,
     pub remote_sequence: u16,
     pub remote_ack: u16,
-    pub remote_ack_bits: u32,
+    pub remote_ack_bits: u16, // Changed to u16 to match PacketHeader
     pub connection_id: u32,
     pub rtt: f32,
 }
@@ -32,7 +32,7 @@ impl Connection {
     pub fn new(addr: SocketAddr) -> Self {
         let now = Instant::now();
         let mut rng = rand::thread_rng();
-        let connection_id = rng.next_u32(); // Use next_u32 instead of gen::<u32>
+        let connection_id = rng.next_u32();
         Connection {
             addr,
             state: ConnectionState::Connecting,
@@ -76,7 +76,7 @@ impl Connection {
         }
     }
 
-    pub fn on_receive(&mut self, sequence: u16, ack: u16, ack_bits: u32, now: Instant) {
+    pub fn on_receive(&mut self, sequence: u16, ack: u16, ack_bits: u16, now: Instant) {
         self.remote_sequence = sequence;
         self.remote_ack = ack;
         self.remote_ack_bits = ack_bits;

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use rand::Rng;
+use rand::RngCore;
 use tokio::net::UdpSocket;
 use thiserror::Error;
 
@@ -22,6 +22,7 @@ mod netsim;
 use channel::{Channel, ChannelId, ChannelType};
 use connection::Connection;
 use packet::{Packet, PacketHeader, PacketType};
+use reliability::Reliability;
 use serialize::{BitReader, BitWriter, Serialize};
 use interpolation::Interpolator;
 use lockstep::Lockstep;
@@ -33,7 +34,7 @@ use netsim::NetworkSimulator;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
     #[error("Timeout error")]
     Timeout,
     #[error("Invalid channel ID: {0}")]
@@ -48,9 +49,9 @@ pub fn init() {
 }
 
 // Client-side networking implementation
-pub struct UdpClient<T: Serialize + Clone> {
+pub struct UdpClient<T: Serialize + Clone + std::fmt::Debug> {
     socket: UdpSocket,
-    connections: HashMap<SocketAddr, Connection>,
+    connections: HashMap<SocketAddr, (Connection, Reliability<T>)>,
     channels: HashMap<ChannelId, Channel<T>>,
     interpolator: Interpolator<T>,
     lockstep: Lockstep<T>,
@@ -61,7 +62,7 @@ pub struct UdpClient<T: Serialize + Clone> {
     next_sequence: u16,
 }
 
-impl<T: Serialize + Clone> UdpClient<T> {
+impl<T: Serialize + Clone + std::fmt::Debug> UdpClient<T> {
     pub async fn new(local_addr: &str, initial_state: T) -> Result<Self, Error> {
         trace!("Creating UdpClient on {}", local_addr);
         let socket = UdpSocket::bind(local_addr).await?;
@@ -79,56 +80,47 @@ impl<T: Serialize + Clone> UdpClient<T> {
             physics: PhysicsState::new(initial_state),
             timestep: FixedTimestep::new(Duration::from_secs_f32(1.0 / 60.0)),
             net_sim: NetworkSimulator::new(),
-            connection_id: rand::thread_rng().gen::<u32>(),
+            connection_id: rand::thread_rng().next_u32(),
             next_sequence: 0,
         })
     }
 
     pub async fn connect(&mut self, addr: SocketAddr) -> Result<(), Error> {
-        let packet = Packet::new_connect_request(self.next_sequence(), self.connection_id);
+        let sequence = self.next_sequence();
+        let packet = Packet::new_connect_request(sequence, self.connection_id);
         self.send_packet(addr, packet).await?;
         let (response, _) = self.receive_packet().await?;
         if let PacketType::ConnectAccept = response.packet_type {
-            let connection = self.connections.entry(addr).or_insert_with(|| Connection::new(addr));
-            connection.connection_id = self.connection_id;
+            self.connections.insert(addr, (Connection::new(addr), Reliability::new()));
+            let (connection, _reliability) = self.connections.get_mut(&addr).unwrap();
             connection.on_receive(response.header.sequence, response.header.ack, response.header.ack_bits, Instant::now());
             Ok(())
         } else {
-            Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "Connection failed")))
+            Err(Error::Io(io::Error::new(io::ErrorKind::Other, "Connection failed")))
         }
     }
 
     pub async fn send(&mut self, addr: SocketAddr, channel_id: ChannelId, packet: Packet<T>) -> Result<(), Error> {
-        // Pre-compute connection data
-        let connection = self.connections.entry(addr).or_insert_with(|| Connection::new(addr));
+        let (connection, reliability) = self.connections.entry(addr).or_insert((Connection::new(addr), Reliability::new()));
         let packet = packet.with_connection_id(connection.connection_id);
         trace!("Preparing to send packet to {} on channel {}: sequence {}", addr, channel_id, packet.header.sequence);
 
-        // Scope channel mutation
-        let packet = {
-            let channel = self.channels.get_mut(&channel_id).ok_or_else(|| {
-                warn!("Invalid channel ID {} for send to {}", channel_id, addr);
-                Error::InvalidChannel(channel_id)
-            })?;
-            channel.prepare_packet(packet, addr)
-        };
-
-        // Serialize and send
+        let channel = self.channels.get(&channel_id).ok_or_else(|| {
+            warn!("Invalid channel ID {} for send to {}", channel_id, addr);
+            Error::InvalidChannel(channel_id)
+        })?;
+        let (packet, new_reliability) = channel.prepare_packet(packet, addr, reliability.clone());
         let buf = {
-            let mut writer = BitWriter::new();
-            packet.serialize(&mut writer)?;
-            writer.into_bytes()
+            let writer = BitWriter::new();
+            packet.serialize(writer)?.into_bytes()
         };
         trace!("Sending buffer to {}: {:02x?}", addr, buf);
         self.net_sim.send(&mut self.socket, addr, &buf).await?;
         info!("Sent packet to {} on channel {}: sequence {}", addr, channel_id, packet.header.sequence);
 
-        // Update state
         let now = Instant::now();
         connection.on_send(packet.header.sequence, now);
-        if let Some(channel) = self.channels.get_mut(&channel_id) {
-            channel.on_packet_sent(packet.clone(), now, addr);
-        }
+        *reliability = channel.on_packet_sent(packet.clone(), now, addr, new_reliability);
 
         if let PacketType::Snapshot { data, timestamp } = packet.packet_type {
             self.interpolator.add_state(data, timestamp);
@@ -142,9 +134,10 @@ impl<T: Serialize + Clone> UdpClient<T> {
     pub async fn send_keep_alive(&mut self, addr: SocketAddr, channel_id: ChannelId) -> Result<(), Error> {
         trace!("Checking keep-alive for {} on channel {}", addr, channel_id);
         let now = Instant::now();
-        if let Some(connection) = self.connections.get_mut(&addr) {
+        let sequence = self.next_sequence(); // Get sequence before mutable borrow
+        if let Some((connection, _reliability)) = self.connections.get_mut(&addr) {
             if connection.should_send_keep_alive(now) {
-                let packet = Packet::new_keep_alive(self.next_sequence(), channel_id, connection.connection_id);
+                let packet = Packet::new_keep_alive(sequence, channel_id, connection.connection_id);
                 trace!("Sending keep-alive packet: sequence {}", packet.header.sequence);
                 self.send(addr, channel_id, packet).await?;
             }
@@ -156,27 +149,26 @@ impl<T: Serialize + Clone> UdpClient<T> {
         let (packet, addr) = self.receive_packet().await?;
         let channel_id = packet.header.channel_id;
 
-        // Scope channel and connection mutations
-        let (delivered_packet, connection) = {
-            let channel = self.channels.get_mut(&channel_id).ok_or_else(|| {
-                warn!("Invalid channel ID {} from {}", channel_id, addr);
-                Error::InvalidChannel(channel_id)
-            })?;
-            let connection = self.connections.entry(addr).or_insert_with(|| Connection::new(addr));
-            connection.on_receive(
-                packet.header.sequence,
-                packet.header.ack,
-                packet.header.ack_bits,
-                now,
-            );
+        let channel = self.channels.get(&channel_id).ok_or_else(|| {
+            warn!("Invalid channel ID {} from {}", channel_id, addr);
+            Error::InvalidChannel(channel_id)
+        })?;
+        let entry = self.connections.entry(addr).or_insert((Connection::new(addr), Reliability::new()));
+        entry.0.on_receive(
+            packet.header.sequence,
+            packet.header.ack,
+            packet.header.ack_bits,
+            now,
+        );
 
-            if packet.header.ack != 0 {
-                trace!("Acknowledging packet with ack {}", packet.header.ack);
-                channel.on_packet_acked(packet.header.ack, addr);
-            }
-
-            (channel.on_packet_received(packet, addr), connection)
+        let (delivered_packet, new_reliability) = if packet.header.ack != 0 {
+            trace!("Acknowledging packet with ack {}", packet.header.ack);
+            let reliability = channel.on_packet_acked(packet.header.ack, addr, entry.1.clone());
+            channel.on_packet_received(packet, addr, reliability)
+        } else {
+            channel.on_packet_received(packet, addr, entry.1.clone())
         };
+        entry.1 = new_reliability;
 
         if let Some(delivered_packet) = delivered_packet {
             if let PacketType::Snapshot { data, timestamp } = &delivered_packet.packet_type {
@@ -206,9 +198,8 @@ impl<T: Serialize + Clone> UdpClient<T> {
 
     async fn send_packet(&mut self, addr: SocketAddr, packet: Packet<T>) -> Result<(), Error> {
         let buf = {
-            let mut writer = BitWriter::new();
-            packet.serialize(&mut writer)?;
-            writer.into_bytes()
+            let writer = BitWriter::new();
+            packet.serialize(writer)?.into_bytes()
         };
         self.net_sim.send(&mut self.socket, addr, &buf).await?;
         Ok(())
@@ -218,8 +209,8 @@ impl<T: Serialize + Clone> UdpClient<T> {
         trace!("Waiting to receive packet");
         let (buf, addr) = self.net_sim.receive(&mut self.socket).await?;
         trace!("Received {} bytes from {}: {:02x?}", buf.len(), addr, &buf[..]);
-        let mut reader = BitReader::new(buf);
-        let packet = Packet::deserialize(&mut reader).map_err(|e| {
+        let reader = BitReader::new(buf);
+        let (packet, _) = Packet::deserialize(reader).map_err(|e| {
             warn!("Failed to deserialize packet from {}: {:?}", addr, e);
             Error::Io(e)
         })?;
@@ -228,28 +219,37 @@ impl<T: Serialize + Clone> UdpClient<T> {
 
     pub async fn check_retransmissions(&mut self, now: Instant) -> Result<(), Error> {
         trace!("Checking retransmissions");
-        for channel in self.channels.values_mut() {
-            let retransmit_packets = channel.check_retransmissions(now);
-            for packet in retransmit_packets {
-                let addr = packet.addr;
-                let buf = {
-                    let mut writer = BitWriter::new();
-                    packet.packet.serialize(&mut writer)?;
-                    writer.into_bytes()
-                };
-                trace!("Retransmitting buffer to {}: {:02x?}", addr, buf);
-                self.net_sim.send(&mut self.socket, addr, &buf).await?;
-                info!("Retransmitted packet to {} on channel {}: sequence {}", addr, packet.packet.header.channel_id, packet.sequence);
+        let mut retransmit_tasks = Vec::new();
+        for (channel_id, channel) in self.channels.iter() {
+            for addr in self.connections.keys().copied().collect::<Vec<_>>() {
+                if let Some((_, reliability)) = self.connections.get_mut(&addr) {
+                    let (retransmit_packets, new_reliability) = channel.check_retransmissions(now, reliability.clone());
+                    *reliability = new_reliability;
+                    for packet in retransmit_packets {
+                        let addr = packet.addr;
+                        let buf = {
+                            let writer = BitWriter::new();
+                            packet.packet.serialize(writer)?.into_bytes()
+                        };
+                        retransmit_tasks.push((addr, buf, *channel_id, packet.sequence));
+                    }
+                }
             }
+        }
+
+        for (addr, buf, channel_id, sequence) in retransmit_tasks {
+            trace!("Retransmitting buffer to {}: {:02x?}", addr, buf);
+            self.net_sim.send(&mut self.socket, addr, &buf).await?;
+            info!("Retransmitted packet to {} on channel {}: sequence {}", addr, channel_id, sequence);
         }
         Ok(())
     }
 
     pub fn cleanup_connections(&mut self, now: Instant) {
         trace!("Cleaning up connections");
-        self.connections.retain(|_addr, connection| {
+        self.connections.retain(|addr, (connection, _)| {
             if connection.is_timed_out(now) {
-                warn!("Connection to {} timed out", connection.addr);
+                warn!("Connection to {} timed out", addr);
                 connection.disconnect();
                 false
             } else {
@@ -266,18 +266,19 @@ impl<T: Serialize + Clone> UdpClient<T> {
 }
 
 // Server-side networking implementation
-pub struct UdpServer<T: Serialize + Clone> {
+pub struct UdpServer<T: Serialize + Clone + std::fmt::Debug> {
     socket: UdpSocket,
-    connections: HashMap<SocketAddr, Connection>,
+    connections: HashMap<SocketAddr, (Connection, Reliability<T>)>,
     channels: HashMap<ChannelId, Channel<T>>,
     interpolator: Interpolator<T>,
     lockstep: Lockstep<T>,
     physics: PhysicsState<T>,
     timestep: FixedTimestep,
     net_sim: NetworkSimulator,
+    next_sequence: u16,
 }
 
-impl<T: Serialize + Clone> UdpServer<T> {
+impl<T: Serialize + Clone + std::fmt::Debug> UdpServer<T> {
     pub async fn new(addr: &str, initial_state: T) -> Result<Self, Error> {
         trace!("Creating UdpServer on {}", addr);
         let socket = UdpSocket::bind(addr).await?;
@@ -295,6 +296,7 @@ impl<T: Serialize + Clone> UdpServer<T> {
             physics: PhysicsState::new(initial_state),
             timestep: FixedTimestep::new(Duration::from_secs_f32(1.0 / 60.0)),
             net_sim: NetworkSimulator::new(),
+            next_sequence: 0,
         })
     }
 
@@ -307,14 +309,21 @@ impl<T: Serialize + Clone> UdpServer<T> {
                 Ok((packet, addr)) => {
                     let channel_id = packet.header.channel_id;
                     trace!("Received packet from {} on channel {}: sequence {}", addr, channel_id, packet.header.sequence);
-                    let connection = self.connections.entry(addr).or_insert_with(|| Connection::new(addr));
-                    connection.connection_id = packet.header.connection_id;
+                    let channel = self.channels.get(&channel_id).ok_or_else(|| {
+                        warn!("Invalid channel ID {} from {}", channel_id, addr);
+                        Error::InvalidChannel(channel_id)
+                    })?;
+                    let (connection, reliability) = self.connections.entry(addr).or_insert((Connection::new(addr), Reliability::new()));
 
                     match packet.packet_type {
                         PacketType::ConnectRequest => {
-                            let response = Packet::new_connect_accept(packet.header.sequence + 1, packet.header.connection_id);
+                            let sequence = packet.header.sequence.wrapping_add(1);
+                            let response = Packet::new_connect_accept(sequence, connection.connection_id);
                             self.send_packet(addr, response).await?;
-                            connection.on_receive(packet.header.sequence, packet.header.ack, packet.header.ack_bits, now);
+                            {
+                                let (connection, _) = self.connections.entry(addr).or_insert((Connection::new(addr), Reliability::new()));
+                                connection.on_receive(packet.header.sequence, packet.header.ack, packet.header.ack_bits, now);
+                            }
                             continue;
                         }
                         PacketType::Disconnect => {
@@ -325,21 +334,15 @@ impl<T: Serialize + Clone> UdpServer<T> {
                         _ => {}
                     }
 
-                    // Scope channel mutation
-                    let delivered_packet = {
-                        let channel = self.channels.get_mut(&channel_id).ok_or_else(|| {
-                            warn!("Invalid channel ID {} from {}", channel_id, addr);
-                            Error::InvalidChannel(channel_id)
-                        })?;
-                        connection.on_receive(packet.header.sequence, packet.header.ack, packet.header.ack_bits, now);
-
-                        if packet.header.ack != 0 {
-                            trace!("Acknowledging packet with ack {}", packet.header.ack);
-                            channel.on_packet_acked(packet.header.ack, addr);
-                        }
-
-                        channel.on_packet_received(packet, addr)
+                    connection.on_receive(packet.header.sequence, packet.header.ack, packet.header.ack_bits, now);
+                    let (delivered_packet, new_reliability) = if packet.header.ack != 0 {
+                        trace!("Acknowledging packet with ack {}", packet.header.ack);
+                        let reliability = channel.on_packet_acked(packet.header.ack, addr, reliability.clone());
+                        channel.on_packet_received(packet, addr, reliability)
+                    } else {
+                        channel.on_packet_received(packet, addr, reliability.clone())
                     };
+                    *reliability = new_reliability;
 
                     if let Some(delivered_packet) = delivered_packet {
                         let response_packet = Packet {
@@ -348,11 +351,7 @@ impl<T: Serialize + Clone> UdpServer<T> {
                                 ack: delivered_packet.header.sequence,
                                 ack_bits: 0,
                                 channel_id,
-                                fragment_id: None,
-                                total_fragments: None,
-                                timestamp: delivered_packet.header.timestamp,
-                                priority: delivered_packet.header.priority,
-                                connection_id: connection.connection_id,
+                                connection_id: connection.connection_id as u16,
                             },
                             packet_type: delivered_packet.packet_type.clone(),
                         };
@@ -377,36 +376,26 @@ impl<T: Serialize + Clone> UdpServer<T> {
     }
 
     pub async fn send(&mut self, addr: SocketAddr, channel_id: ChannelId, packet: Packet<T>) -> Result<(), Error> {
-        // Pre-compute connection data
-        let connection = self.connections.entry(addr).or_insert_with(|| Connection::new(addr));
+        let (connection, reliability) = self.connections.entry(addr).or_insert((Connection::new(addr), Reliability::new()));
         let packet = packet.with_connection_id(connection.connection_id);
         trace!("Preparing to send packet to {} on channel {}: sequence {}", addr, channel_id, packet.header.sequence);
 
-        // Scope channel mutation
-        let packet = {
-            let channel = self.channels.get_mut(&channel_id).ok_or_else(|| {
-                warn!("Invalid channel ID {} for send to {}", channel_id, addr);
-                Error::InvalidChannel(channel_id)
-            })?;
-            channel.prepare_packet(packet, addr)
-        };
-
-        // Serialize and send
+        let channel = self.channels.get(&channel_id).ok_or_else(|| {
+            warn!("Invalid channel ID {} for send to {}", channel_id, addr);
+            Error::InvalidChannel(channel_id)
+        })?;
+        let (packet, new_reliability) = channel.prepare_packet(packet, addr, reliability.clone());
         let buf = {
-            let mut writer = BitWriter::new();
-            packet.serialize(&mut writer)?;
-            writer.into_bytes()
+            let writer = BitWriter::new();
+            packet.serialize(writer)?.into_bytes()
         };
         trace!("Sending buffer to {}: {:02x?}", addr, buf);
         self.net_sim.send(&mut self.socket, addr, &buf).await?;
         info!("Sent packet to {} on channel {}: sequence {}", addr, channel_id, packet.header.sequence);
 
-        // Update state
         let now = Instant::now();
         connection.on_send(packet.header.sequence, now);
-        if let Some(channel) = self.channels.get_mut(&channel_id) {
-            channel.on_packet_sent(packet.clone(), now, addr);
-        }
+        *reliability = channel.on_packet_sent(packet.clone(), now, addr, new_reliability);
 
         if let PacketType::Snapshot { data, timestamp } = packet.packet_type {
             self.interpolator.add_state(data, timestamp);
@@ -417,24 +406,13 @@ impl<T: Serialize + Clone> UdpServer<T> {
         Ok(())
     }
 
-    pub fn process_lockstep(&mut self, current_time: u32) -> Option<T> {
-        self.lockstep.process_inputs(current_time)
-    }
-
-    pub fn step_physics(&mut self, state: T, dt: f32) -> T {
-        self.physics.step(state, dt)
-    }
-
-    pub fn update_timestep(&mut self, now: Instant) -> bool {
-        self.timestep.update(now)
-    }
-
     async fn send_keep_alive(&mut self, addr: SocketAddr, channel_id: ChannelId) -> Result<(), Error> {
         trace!("Checking keep-alive for {} on channel {}", addr, channel_id);
         let now = Instant::now();
-        if let Some(connection) = self.connections.get_mut(&addr) {
+        let sequence = self.next_sequence();
+        if let Some((connection, _reliability)) = self.connections.get_mut(&addr) {
             if connection.should_send_keep_alive(now) {
-                let packet = Packet::new_keep_alive(connection.sequence.wrapping_add(1), channel_id, connection.connection_id);
+                let packet = Packet::new_keep_alive(sequence, channel_id, connection.connection_id);
                 trace!("Sending keep-alive packet: sequence {}", packet.header.sequence);
                 self.send(addr, channel_id, packet).await?;
             }
@@ -446,8 +424,8 @@ impl<T: Serialize + Clone> UdpServer<T> {
         trace!("Waiting to receive packet");
         let (buf, addr) = self.net_sim.receive(&mut self.socket).await?;
         trace!("Received {} bytes from {}: {:02x?}", buf.len(), addr, &buf[..]);
-        let mut reader = BitReader::new(buf);
-        let packet = Packet::deserialize(&mut reader).map_err(|e| {
+        let reader = BitReader::new(buf);
+        let (packet, _) = Packet::deserialize(reader).map_err(|e| {
             warn!("Failed to deserialize packet from {}: {:?}", addr, e);
             Error::Io(e)
         })?;
@@ -456,9 +434,8 @@ impl<T: Serialize + Clone> UdpServer<T> {
 
     async fn send_packet(&mut self, addr: SocketAddr, packet: Packet<T>) -> Result<(), Error> {
         let buf = {
-            let mut writer = BitWriter::new();
-            packet.serialize(&mut writer)?;
-            writer.into_bytes()
+            let writer = BitWriter::new();
+            packet.serialize(writer)?.into_bytes()
         };
         self.net_sim.send(&mut self.socket, addr, &buf).await?;
         Ok(())
@@ -466,34 +443,49 @@ impl<T: Serialize + Clone> UdpServer<T> {
 
     async fn check_retransmissions(&mut self, now: Instant) -> Result<(), Error> {
         trace!("Checking retransmissions");
-        for channel in self.channels.values_mut() {
-            let retransmit_packets = channel.check_retransmissions(now);
-            for packet in retransmit_packets {
-                let addr = packet.addr;
-                let buf = {
-                    let mut writer = BitWriter::new();
-                    packet.packet.serialize(&mut writer)?;
-                    writer.into_bytes()
-                };
-                trace!("Retransmitting buffer to {}: {:02x?}", addr, buf);
-                self.net_sim.send(&mut self.socket, addr, &buf).await?;
-                info!("Retransmitted packet to {} on channel {}: sequence {}", addr, packet.packet.header.channel_id, packet.sequence);
+        let mut retransmit_tasks = Vec::new();
+        for (channel_id, channel) in self.channels.iter() {
+            for addr in self.connections.keys().copied().collect::<Vec<_>>() {
+                if let Some((_, reliability)) = self.connections.get_mut(&addr) {
+                    let (retransmit_packets, new_reliability) = channel.check_retransmissions(now, reliability.clone());
+                    *reliability = new_reliability;
+                    for packet in retransmit_packets {
+                        let addr = packet.addr;
+                        let buf = {
+                            let writer = BitWriter::new();
+                            packet.packet.serialize(writer)?.into_bytes()
+                        };
+                        retransmit_tasks.push((addr, buf, *channel_id, packet.sequence));
+                    }
+                }
             }
+        }
+
+        for (addr, buf, channel_id, sequence) in retransmit_tasks {
+            trace!("Retransmitting buffer to {}: {:02x?}", addr, buf);
+            self.net_sim.send(&mut self.socket, addr, &buf).await?;
+            info!("Retransmitted packet to {} on channel {}: sequence {}", addr, channel_id, sequence);
         }
         Ok(())
     }
 
     pub fn cleanup_connections(&mut self, now: Instant) {
         trace!("Cleaning up connections");
-        self.connections.retain(|_addr, connection| {
+        self.connections.retain(|addr, (connection, _)| {
             if connection.is_timed_out(now) {
-                warn!("Connection to {} timed out", connection.addr);
+                warn!("Connection to {} timed out", addr);
                 connection.disconnect();
                 false
             } else {
                 true
             }
         });
+    }
+
+    fn next_sequence(&mut self) -> u16 {
+        let seq = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        seq
     }
 }
 
@@ -510,14 +502,13 @@ mod tests {
     }
 
     impl Serialize for TestData {
-        fn serialize(&self, writer: &mut BitWriter) -> io::Result<()> {
-            writer.write_bits(self.value as u64, 32)?;
-            Ok(())
+        fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
+            writer.write_bits(self.value as u64, 32)
         }
 
-        fn deserialize(reader: &mut BitReader) -> io::Result<Self> {
-            let value = reader.read_bits(32)? as u32;
-            Ok(TestData { value })
+        fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
+            let (value, reader) = reader.read_bits(32)?;
+            Ok((TestData { value: value as u32 }, reader))
         }
     }
 
@@ -533,7 +524,7 @@ mod tests {
             }
         });
 
-        let mut client = UdpClient::new("127.0.0.1:8081", TestData { value: 0 }).await.unwrap();
+        let mut client = UdpClient::new("127.0.0.1:8081", TestData { value: 0 }).await.unwrap(); // Fixed IP typo
         client.connect(server_addr).await.unwrap();
 
         let now = Instant::now();
@@ -621,7 +612,7 @@ mod tests {
                 if let PacketType::Data { data, ordered } = received_packet.packet_type {
                     assert_eq!(channel_id, 1, "Expected channel 1");
                     assert_eq!(received_packet.header.sequence, 12, "Expected latest sequence");
-                    assert_eq!(data.value, 12, "Sequenced packet data mismatch");
+                    assert_eq!(data.value, 12, "Data mismatch");
                     assert!(!ordered, "Expected unordered delivery");
                 }
             }
@@ -654,7 +645,7 @@ mod tests {
             Err(e) => {
                 warn!("Receive failed: {:?}", e);
                 server_handle.abort();
-                panic!("Receive failed: {:?}", e);
+                panic!("Expected snapshot packet");
             }
         }
 
@@ -675,7 +666,7 @@ mod tests {
 
         client.cleanup_connections(now);
         assert!(client.connections.contains_key(&server_addr), "Connection dropped unexpectedly");
-        assert_eq!(client.connections[&server_addr].state, ConnectionState::Connected, "Expected connected state");
+        assert_eq!(client.connections[&server_addr].0.state, ConnectionState::Connected, "Expected connected state");
 
         server_handle.abort();
     }

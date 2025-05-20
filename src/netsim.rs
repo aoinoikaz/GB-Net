@@ -32,7 +32,7 @@ impl NetworkSimulator {
     }
 
     // Simulates sending a packet with loss, latency, and jitter
-    pub async fn send(&mut self, socket: &mut UdpSocket, addr: SocketAddr, buf: &[u8]) -> Result<(), std::io::Error> {
+    pub async fn send(&mut self, _socket: &mut UdpSocket, addr: SocketAddr, buf: &[u8]) -> Result<(), std::io::Error> {
         if thread_rng().r#gen::<f32>() < self.packet_loss_rate {
             trace!("Dropped packet to {} due to simulated loss", addr);
             return Ok(());

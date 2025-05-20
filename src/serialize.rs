@@ -1,163 +1,115 @@
-use log::{debug, trace};
 use std::io;
 
-// Trait for serializing and deserializing game data (e.g., game state, inputs)
+// Trait for serializable types
 pub trait Serialize {
-    fn serialize(&self, writer: &mut BitWriter) -> io::Result<()>;
-    fn deserialize(reader: &mut BitReader) -> io::Result<Self> where Self: Sized;
+    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter>;
+    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> where Self: Sized;
 }
 
-// Default implementation for Vec<u8> as a fallback for raw or legacy data
-impl Serialize for Vec<u8> {
-    fn serialize(&self, writer: &mut BitWriter) -> io::Result<()> {
-        writer.write_bits(self.len() as u64, 16)?;
-        for &byte in self {
-            writer.write_bits(byte as u64, 8)?;
-        }
-        Ok(())
-    }
-
-    fn deserialize(reader: &mut BitReader) -> io::Result<Self> {
-        let len = reader.read_bits(16)? as usize;
-        let mut data = Vec::with_capacity(len);
-        for _ in 0..len {
-            data.push(reader.read_bits(8)? as u8);
-        }
-        Ok(data)
-    }
-}
-
-// Bit-level writer for efficient packet serialization
-#[derive(Debug)]
+// Functional bit-level writer
+#[derive(Debug, Clone, PartialEq)]
 pub struct BitWriter {
     buffer: Vec<u8>,
-    current_byte: u8,
-    bit_position: u8,
+    bit_offset: usize,
 }
 
 impl BitWriter {
     pub fn new() -> Self {
         BitWriter {
-            buffer: Vec::new(),
-            current_byte: 0,
-            bit_position: 0,
+            buffer: Vec::with_capacity(128), // Pre-allocate
+            bit_offset: 0,
         }
     }
 
-    // Writes a specified number of bits from a value to the buffer
-    pub fn write_bits(&mut self, value: u64, bits: u8) -> io::Result<()> {
-        if bits > 64 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot write more than 64 bits"));
+    pub fn write_bits(self, value: u64, num_bits: u8) -> io::Result<Self> {
+        if num_bits == 0 || num_bits > 64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid number of bits"));
         }
-        let mut remaining_bits = bits;
-        let mut current_value = value;
 
-        while remaining_bits > 0 {
-            let bits_to_write = (8 - self.bit_position).min(remaining_bits);
-            let shift = remaining_bits.saturating_sub(bits_to_write);
-            let bits_value = ((current_value >> shift) & ((1 << bits_to_write) - 1)) as u8;
+        let mut writer = self;
+        let mut bits_remaining = num_bits as usize;
+        let value = value & ((1u64 << num_bits) - 1);
 
-            self.current_byte |= bits_value << (8 - self.bit_position - bits_to_write);
-            self.bit_position += bits_to_write;
-            remaining_bits -= bits_to_write;
-            current_value &= (1 << remaining_bits) - 1;
+        while bits_remaining > 0 {
+            let byte_index = writer.bit_offset / 8;
+            let bit_index = writer.bit_offset % 8;
+            let bits_to_write = (8 - bit_index).min(bits_remaining);
 
-            if self.bit_position >= 8 {
-                self.buffer.push(self.current_byte);
-                trace!("Flushed byte to buffer: {:02x}", self.current_byte);
-                self.current_byte = 0;
-                self.bit_position = 0;
+            if byte_index >= writer.buffer.len() {
+                writer.buffer.push(0);
             }
+
+            let shift = (8 - bit_index - bits_to_write) as u64;
+            let mask = ((1u64 << bits_to_write) - 1) << shift;
+            let bits = (value >> (bits_remaining - bits_to_write)) & ((1u64 << bits_to_write) - 1);
+            writer.buffer[byte_index] = (writer.buffer[byte_index] & !(mask as u8)) | ((bits << shift) as u8);
+
+            writer.bit_offset += bits_to_write;
+            bits_remaining -= bits_to_write;
         }
-        Ok(())
+
+        Ok(writer)
     }
 
-    // Flushes any remaining bits to the buffer
-    pub fn flush(&mut self) -> io::Result<()> {
-        if self.bit_position > 0 {
-            self.buffer.push(self.current_byte);
-            trace!("Flushed final byte: {:02x}", self.current_byte);
-            self.current_byte = 0;
-            self.bit_position = 0;
-        }
-        Ok(())
+    pub fn write_bit(self, value: bool) -> io::Result<Self> {
+        self.write_bits(value as u64, 1)
     }
 
-    // Returns the serialized buffer
     pub fn into_bytes(self) -> Vec<u8> {
-        trace!("Returning buffer: {:02x?}", self.buffer);
         self.buffer
     }
 }
 
-// Bit-level reader for deserializing packets
-#[derive(Debug)]
+// Functional bit-level reader
+#[derive(Debug, Clone, PartialEq)]
 pub struct BitReader {
     buffer: Vec<u8>,
-    position: usize,
-    bit_position: u8,
+    bit_offset: usize,
 }
 
 impl BitReader {
     pub fn new(buffer: Vec<u8>) -> Self {
-        trace!("Initialized BitReader with buffer: {:02x?}", buffer);
         BitReader {
             buffer,
-            position: 0,
-            bit_position: 0,
+            bit_offset: 0,
         }
     }
 
-    // Reads a specified number of bits from the buffer
-    pub fn read_bits(&mut self, bits: u8) -> io::Result<u64> {
-        if bits > 64 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cannot read more than 64 bits",
-            ));
+    pub fn read_bits(self, num_bits: u8) -> io::Result<(u64, Self)> {
+        if num_bits == 0 || num_bits > 64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid number of bits"));
         }
-        if bits == 0 {
-            return Ok(0);
+        if self.bit_offset + num_bits as usize > self.buffer.len() * 8 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Buffer underflow"));
         }
 
-        let total_bits_available = (self.buffer.len().saturating_sub(self.position)) * 8
-            - self.bit_position as usize;
-        if bits as usize > total_bits_available {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Not enough bits available",
-            ));
+        let mut result = 0u64;
+        let mut bits_remaining = num_bits as usize;
+        let mut reader = self;
+
+        while bits_remaining > 0 {
+            let byte_index = reader.bit_offset / 8;
+            let bit_index = reader.bit_offset % 8;
+            let bits_to_read = (8 - bit_index).min(bits_remaining);
+
+            let shift = (8 - bit_index - bits_to_read) as u64;
+            let mask = ((1u64 << bits_to_read) - 1) << shift;
+            let bits = ((reader.buffer[byte_index] as u64 & mask) >> shift) as u64;
+
+            result = (result << bits_to_read) | bits;
+            reader.bit_offset += bits_to_read;
+            bits_remaining -= bits_to_read;
         }
 
-        let mut result: u64 = 0;
-        let mut remaining_bits = bits;
-
-        while remaining_bits > 0 {
-            let bits_to_read = (8 - self.bit_position).min(remaining_bits);
-            let byte = self.buffer.get(self.position).copied().unwrap_or(0);
-            let shift = 8 - self.bit_position - bits_to_read;
-            let mask = ((1 << bits_to_read) - 1) << shift;
-            let value = ((byte & mask) >> shift) as u64;
-
-            result = (result << bits_to_read) | value;
-            self.bit_position += bits_to_read;
-            remaining_bits -= bits_to_read;
-
-            if self.bit_position >= 8 {
-                self.position += 1;
-                self.bit_position = 0;
-            }
-            debug!(
-                "Processed {} bits: value {}, position {}, bit_position {}",
-                bits_to_read, value, self.position, self.bit_position
-            );
-        }
-
-        Ok(result)
+        Ok((result, reader))
     }
 
-    // Returns the remaining buffer
+    pub fn read_bit(self) -> io::Result<(bool, Self)> {
+        self.read_bits(1).map(|(v, r)| (v != 0, r))
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
-        self.buffer
+        let byte_index = (self.bit_offset + 7) / 8;
+        self.buffer[byte_index..].to_vec()
     }
 }

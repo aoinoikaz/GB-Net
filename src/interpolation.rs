@@ -64,7 +64,7 @@ impl<T: Serialize + Clone> Interpolator<T> {
     }
 
     // Interpolates between two states (placeholder for custom interpolation)
-    fn interpolate_data(&self, before: &T, after: &T, t: f32) -> T {
+    fn interpolate_data(&self, _before: &T, after: &T, t: f32) -> T {
         // Note: This is a placeholder. Developers should implement custom interpolation
         // for their game state (e.g., linear interpolation for positions).
         // For generic T, we return a clone of the after state as a fallback.
