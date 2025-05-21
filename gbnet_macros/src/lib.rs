@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Index, GenericParam, Generics, Field, LitInt, Type};
+use syn::{parse_macro_input, DeriveInput, Data, Fields, Index, GenericParam, Generics, Field, Type};
 
 fn add_trait_bounds(mut generics: Generics, bound: proc_macro2::TokenStream) -> Generics {
     let parsed_bound: syn::TypeParamBound = syn::parse2(bound).unwrap();
@@ -19,21 +19,66 @@ fn should_serialize_field(field: &Field) -> bool {
 fn get_field_bits(field: &Field) -> Option<usize> {
     field.attrs.iter()
         .find(|attr| attr.path().is_ident("bits"))
-        .and_then(|attr| attr.parse_args::<LitInt>().ok()
-        .and_then(|lit| lit.base10_parse::<usize>().ok()))
+        .and_then(|attr| {
+            match &attr.meta {
+                syn::Meta::NameValue(syn::MetaNameValue {
+                    value: syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(lit),
+                        ..
+                    }),
+                    ..
+                }) => lit.base10_parse::<usize>().ok(),
+                _ => None,
+            }
+        })
 }
 
 fn get_max_len(field: &Field, input: &DeriveInput) -> Option<usize> {
     let field_max_len = field.attrs.iter()
         .find(|attr| attr.path().is_ident("max_len"))
-        .and_then(|attr| attr.parse_args::<LitInt>().ok()
-        .and_then(|lit| lit.base10_parse::<usize>().ok()));
+        .and_then(|attr| {
+            match &attr.meta {
+                syn::Meta::NameValue(syn::MetaNameValue {
+                    value: syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(lit),
+                        ..
+                    }),
+                    ..
+                }) => {
+                    let result = lit.base10_parse::<usize>().ok();
+                    eprintln!("Field max_len for {:?}: {:?}", field.ident, result);
+                    result
+                }
+                _ => {
+                    eprintln!("Field max_len parse failed for {:?}", field.ident);
+                    None
+                }
+            }
+        });
 
     if field_max_len.is_none() {
-        return input.attrs.iter()
+        let default_max_len = input.attrs.iter()
             .find(|attr| attr.path().is_ident("default_max_len"))
-            .and_then(|attr| attr.parse_args::<LitInt>().ok()
-            .and_then(|lit| lit.base10_parse::<usize>().ok()));
+            .and_then(|attr| {
+                match &attr.meta {
+                    syn::Meta::NameValue(syn::MetaNameValue {
+                        value: syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(lit),
+                            ..
+                        }),
+                        ..
+                    }) => {
+                        let result = lit.base10_parse::<usize>().ok();
+                        eprintln!("Default max_len for input: {:?}", result);
+                        result
+                    }
+                    _ => {
+                        eprintln!("Default max_len parse failed");
+                        None
+                    }
+                }
+            });
+        return default_max_len;
     }
 
     field_max_len
@@ -95,7 +140,7 @@ fn get_field_bit_width(field: &Field, defaults: &[(String, usize)]) -> usize {
             }
         }
         match type_name.as_deref() {
-            Some("u8") | Some("i8") => 8,
+            Some("u8") | Some("i8") => 4,
             Some("u16") | Some("i16") => 16,
             Some("u32") | Some("i32") => 32,
             Some("u64") | Some("i64") => 64,
@@ -130,8 +175,18 @@ fn validate_field_bits(field: &Field, bits: usize) -> syn::Result<()> {
 fn get_enum_bits(input: &DeriveInput) -> Option<usize> {
     input.attrs.iter()
         .find(|attr| attr.path().is_ident("bits"))
-        .and_then(|attr| attr.parse_args::<LitInt>().ok()
-        .and_then(|lit| lit.base10_parse::<usize>().ok()))
+        .and_then(|attr| {
+            match &attr.meta {
+                syn::Meta::NameValue(syn::MetaNameValue {
+                    value: syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(lit),
+                        ..
+                    }),
+                    ..
+                }) => lit.base10_parse::<usize>().ok(),
+                _ => None,
+            }
+        })
 }
 
 #[proc_macro_derive(NetworkSerialize, attributes(no_serialize, bits, max_len, byte_align, default_bits, default_max_len))]
@@ -249,14 +304,16 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 let len_bits = (max_len as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
-                                let default_len_bits = 16usize; // Explicit usize
+                                let default_len_bits = 16usize;
                                 (default_len_bits, quote! { 65535usize })
                             };
                             quote! {
-                                if self.#name.len() > #max_len_expr {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                let max_len = #max_len_expr;
+                                if self.#name.len() > max_len {
+                                    log::debug!("Vector length {} exceeds max_len {} for field {:?}", self.#name.len(), max_len, stringify!(#name));
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", self.#name.len(), max_len)));
                                 }
-                                writer.write_bits(self.#name.len() as u64, #len_bits as usize)?;
+                                writer.write_bits(self.#name.len() as u64, #len_bits)?;
                                 for item in &self.#name {
                                     item.bit_serialize(writer)?;
                                 }
@@ -299,14 +356,16 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 let len_bits = (max_len as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
-                                let default_len_bits = 16usize; // Explicit usize
+                                let default_len_bits = 16usize;
                                 (default_len_bits, quote! { 65535usize })
                             };
                             quote! {
-                                if self.#index.len() > #max_len_expr {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                let max_len = #max_len_expr;
+                                if self.#index.len() > max_len {
+                                    log::debug!("Vector length {} exceeds max_len {} for field {}", self.#index.len(), max_len, #index);
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", self.#index.len(), max_len)));
                                 }
-                                writer.write_bits(self.#index.len() as u64, #len_bits as usize)?;
+                                writer.write_bits(self.#index.len() as u64, #len_bits)?;
                                 for item in &self.#index {
                                     item.bit_serialize(writer)?;
                                 }
@@ -377,13 +436,14 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 let len_bits = (max_len as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
-                                let default_len_bits = 16usize; // Explicit usize
+                                let default_len_bits = 16usize;
                                 (default_len_bits, quote! { 65535usize })
                             };
                             quote! {
-                                let len = reader.read_bits(#len_bits as usize)? as usize;
+                                let len = reader.read_bits(#len_bits)? as usize;
                                 if len > #max_len_expr {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                    log::debug!("Vector length {} exceeds max_len {} for field {:?}", len, #max_len_expr, stringify!(#name));
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", len, #max_len_expr)));
                                 }
                                 let mut #name = Vec::with_capacity(len);
                                 for _ in 0..len {
@@ -455,13 +515,14 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 let len_bits = (max_len as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
-                                let default_len_bits = 16usize; // Explicit usize
+                                let default_len_bits = 16usize;
                                 (default_len_bits, quote! { 65535usize })
                             };
                             quote! {
-                                let len = reader.read_bits(#len_bits as usize)? as usize;
+                                let len = reader.read_bits(#len_bits)? as usize;
                                 if len > #max_len_expr {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                    log::debug!("Vector length {} exceeds max_len {} for field {}", len, #max_len_expr, #i);
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", len, #max_len_expr)));
                                 }
                                 let mut #name = Vec::with_capacity(len);
                                 for _ in 0..len {
@@ -542,14 +603,16 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                                     let len_bits = (max_len as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
-                                    let default_len_bits = 16usize; // Explicit usize
+                                    let default_len_bits = 16usize;
                                     (default_len_bits, quote! { 65535usize })
                                 };
                                 quote! {
-                                    if #name.len() > #max_len_expr {
-                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                    let max_len = #max_len_expr;
+                                    if #name.len() > max_len {
+                                        log::debug!("Vector length {} exceeds max_len {} for field {:?}", #name.len(), max_len, stringify!(#name));
+                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", #name.len(), max_len)));
                                     }
-                                    writer.write_bits(#name.len() as u64, #len_bits as usize)?;
+                                    writer.write_bits(#name.len() as u64, #len_bits)?;
                                     for item in #name {
                                         item.bit_serialize(writer)?;
                                     }
@@ -615,14 +678,16 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                                     let len_bits = (max_len as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
-                                    let default_len_bits = 16usize; // Explicit usize
+                                    let default_len_bits = 16usize;
                                     (default_len_bits, quote! { 65535usize })
                                 };
                                 quote! {
-                                    if #name.len() > #max_len_expr {
-                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                    let max_len = #max_len_expr;
+                                    if #name.len() > max_len {
+                                        log::debug!("Vector length {} exceeds max_len {} for field {}", #name.len(), max_len, #i);
+                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", #name.len(), max_len)));
                                     }
-                                    writer.write_bits(#name.len() as u64, #len_bits as usize)?;
+                                    writer.write_bits(#name.len() as u64, #len_bits)?;
                                     for item in #name {
                                         item.bit_serialize(writer)?;
                                     }
@@ -735,13 +800,14 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     let len_bits = (max_len as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
-                                    let default_len_bits = 16usize; // Explicit usize
+                                    let default_len_bits = 16usize;
                                     (default_len_bits, quote! { 65535usize })
                                 };
                                 quote! {
-                                    let len = reader.read_bits(#len_bits as usize)? as usize;
+                                    let len = reader.read_bits(#len_bits)? as usize;
                                     if len > #max_len_expr {
-                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                        log::debug!("Vector length {} exceeds max_len {} for field {:?}", len, #max_len_expr, stringify!(#name));
+                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", len, #max_len_expr)));
                                     }
                                     let mut #name = Vec::with_capacity(len);
                                     for _ in 0..len {
@@ -826,13 +892,14 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     let len_bits = (max_len as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
-                                    let default_len_bits = 16usize; // Explicit usize
+                                    let default_len_bits = 16usize;
                                     (default_len_bits, quote! { 65535usize })
                                 };
                                 quote! {
-                                    let len = reader.read_bits(#len_bits as usize)? as usize;
+                                    let len = reader.read_bits(#len_bits)? as usize;
                                     if len > #max_len_expr {
-                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+                                        log::debug!("Vector length {} exceeds max_len {} for field {}", len, #max_len_expr, #i);
+                                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Vector length {} exceeds max_len {}", len, #max_len_expr)));
                                     }
                                     let mut #name = Vec::with_capacity(len);
                                     for _ in 0..len {
