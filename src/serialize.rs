@@ -1,21 +1,27 @@
-use super::{bit_io::{BitWriter, BitReader}, Serialize, Deserialize};
-use std::io;
+use std::io::{self, Read, Write};
+use std::time::Instant;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
+
+pub trait Serialize {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()>;
+}
+
+pub trait Deserialize: Sized {
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self>;
+}
 
 macro_rules! impl_primitive {
-    ($($t:ty, $write:ident, $read:ident, $bits:expr),*) => {
+    ($($t:ty, $write:ident, $read:ident),*) => {
         $(
             impl Serialize for $t {
-                fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-                    writer.$write(*self)
+                fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+                    writer.$write::<std::io::LittleEndian>(*self)?;
+                    Ok(())
                 }
             }
-
             impl Deserialize for $t {
-                fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-                    reader.$read()
+                fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+                    reader.$read::<std::io::LittleEndian>()
                 }
             }
         )*
@@ -23,184 +29,181 @@ macro_rules! impl_primitive {
 }
 
 impl_primitive!(
-    u8, write_u8, read_u8, 8,
-    u16, write_u16, read_u16, 16,
-    u32, write_u32, read_u32, 32,
-    i32, write_i32, read_i32, 32,
-    f32, write_f32, read_f32, 32,
-    f64, write_f64, read_f64, 64
+    u8, write_u8, read_u8,
+    u16, write_u16, read_u16,
+    u32, write_u32, read_u32,
+    u64, write_u64, read_u64,
+    i8, write_i8, read_i8,
+    i16, write_i16, read_i16,
+    i32, write_i32, read_i32,
+    i64, write_i64, read_i64,
+    f32, write_f32, read_f32,
+    f64, write_f64, read_f64
 );
 
 impl Serialize for bool {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        writer.write_bit(*self)
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_u8(if *self { 1 } else { 0 })?;
+        Ok(())
     }
 }
 
 impl Deserialize for bool {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        reader.read_bit()
-    }
-}
-
-macro_rules! impl_tuple {
-    ($($n:tt $T:ident),*) => {
-        impl<$($T: Serialize),*> Serialize for ($($T),*) {
-            fn serialize(&self, mut writer: BitWriter) -> io::Result<BitWriter> {
-                $(
-                    writer = self.$n.serialize(writer)?;
-                )*
-                Ok(writer)
-            }
-        }
-        impl<$($T: Deserialize),*> Deserialize for ($($T),*) {
-            fn deserialize(mut reader: BitReader) -> io::Result<(Self, BitReader)> {
-                $(
-                    let (val_$n, r) = $T::deserialize(reader)?;
-                    reader = r;
-                )*
-                Ok((($(val_$n),*), reader))
-            }
-        }
-    };
-}
-
-impl_tuple!(0 T0);
-impl_tuple!(0 T0, 1 T1);
-impl_tuple!(0 T0, 1 T1, 2 T2);
-impl_tuple!(0 T0, 1 T1, 2 T2, 3 T3);
-
-impl<T: Serialize, const N: usize> Serialize for [T; N] {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        self.iter().fold(Ok(writer), |w, item| item.serialize(w?))
-    }
-}
-
-impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let mut reader = reader;
-        let mut arr = [const { std::mem::MaybeUninit::<T>::uninit() }; N];
-        for i in 0..N {
-            let (item, r) = T::deserialize(reader)?;
-            arr[i] = std::mem::MaybeUninit::new(item);
-            reader = r;
-        }
-        let arr = unsafe { std::mem::transmute_copy(&arr) };
-        Ok((arr, reader))
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let value = reader.read_u8()?;
+        Ok(value != 0)
     }
 }
 
 impl<T: Serialize> Serialize for Vec<T> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        let writer = writer.write_bits(self.len() as u64, 16)?;
-        self.iter().fold(Ok(writer), |w, item| item.serialize(w?))
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_u32::<std::io::LittleEndian>(self.len() as u32)?;
+        for item in self {
+            item.serialize(writer)?;
+        }
+        Ok(())
     }
 }
 
 impl<T: Deserialize> Deserialize for Vec<T> {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let (len, mut reader) = reader.read_bits(16)?;
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let len = reader.read_u32::<std::io::LittleEndian>()?;
         let mut vec = Vec::with_capacity(len as usize);
         for _ in 0..len {
-            let (item, r) = T::deserialize(reader)?;
-            vec.push(item);
-            reader = r;
+            vec.push(T::deserialize(reader)?);
         }
-        Ok((vec, reader))
+        Ok(vec)
+    }
+}
+
+impl Serialize for String {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let bytes = self.as_bytes();
+        writer.write_u32::<std::io::LittleEndian>(bytes.len() as u32)?;
+        writer.write_all(bytes)?;
+        Ok(())
+    }
+}
+
+impl Deserialize for String {
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let len = reader.read_u32::<std::io::LittleEndian>()?;
+        let mut bytes = vec![0u8; len as usize];
+        reader.read_exact(&mut bytes)?;
+        String::from_utf8(bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))
     }
 }
 
 impl<K: Serialize, V: Serialize> Serialize for HashMap<K, V> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        let writer = writer.write_bits(self.len() as u64, 16)?;
-        let mut writer = writer;
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_u32::<std::io::LittleEndian>(self.len() as u32)?;
         for (key, value) in self {
-            writer = key.serialize(writer)?;
-            writer = value.serialize(writer)?;
+            key.serialize(writer)?;
+            value.serialize(writer)?;
         }
-        Ok(writer)
+        Ok(())
     }
 }
 
 impl<K: Deserialize + std::cmp::Eq + std::hash::Hash, V: Deserialize> Deserialize for HashMap<K, V> {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let (len, mut reader) = reader.read_bits(16)?;
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let len = reader.read_u32::<std::io::LittleEndian>()?;
         let mut map = HashMap::with_capacity(len as usize);
         for _ in 0..len {
-            let (key, r) = K::deserialize(reader)?;
-            let (value, r) = V::deserialize(r)?;
+            let key = K::deserialize(reader)?;
+            let value = V::deserialize(reader)?;
             map.insert(key, value);
-            reader = r;
         }
-        Ok((map, reader))
+        Ok(map)
+    }
+}
+
+impl<T: Serialize, const N: usize> Serialize for [T; N] {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        for item in self {
+            item.serialize(writer)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Deserialize, const N: usize> Deserialize for [T; N] {
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let mut arr = [const { std::mem::MaybeUninit::<T>::uninit() }; N];
+        for i in 0..N {
+            arr[i] = std::mem::MaybeUninit::new(T::deserialize(reader)?);
+        }
+        let arr = unsafe { std::mem::transmute_copy(&arr) };
+        Ok(arr)
     }
 }
 
 impl<T: Serialize> Serialize for Option<T> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         match self {
-            None => writer.write_bits(0, 1),
-            Some(value) => value.serialize(writer.write_bits(1, 1)?),
+            None => writer.write_u8(0),
+            Some(value) => {
+                writer.write_u8(1)?;
+                value.serialize(writer)
+            }
         }
     }
 }
 
 impl<T: Deserialize> Deserialize for Option<T> {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let (tag, reader) = reader.read_bit()?;
-        if tag {
-            let (value, reader) = T::deserialize(reader)?;
-            Ok((Some(value), reader))
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let tag = reader.read_u8()?;
+        if tag == 0 {
+            Ok(None)
         } else {
-            Ok((None, reader))
+            Ok(Some(T::deserialize(reader)?))
         }
     }
 }
 
-impl Serialize for String {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        let bytes = self.as_bytes();
-        let writer = writer.write_bits(bytes.len() as u64, 16)?;
-        bytes.iter().fold(Ok(writer), |w, &b| w?.write_bits(b as u64, 8))
-    }
-}
-
-impl Deserialize for String {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let (len, mut reader) = reader.read_bits(16)?;
-        let mut bytes = vec![0u8; len as usize];
-        for b in bytes.iter_mut() {
-            let (byte, r) = reader.read_bits(8)?;
-            *b = byte as u8;
-            reader = r;
+macro_rules! impl_tuple {
+    ($($n:tt $T:ident),*) => {
+        impl<$($T: Serialize),*> Serialize for ($($T,)*) {
+            fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+                $(
+                    self.$n.serialize(writer)?;
+                )*
+                Ok(())
+            }
         }
-        let s = String::from_utf8(bytes)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
-        Ok((s, reader))
+        impl<$($T: Deserialize),*> Deserialize for ($($T,)*) {
+            fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+                $(
+                    let val_$n = $T::deserialize(reader)?;
+                )*
+                Ok(($(val_$n,)*))
+            }
+        }
+    };
+}
+
+impl_tuple!();
+impl_tuple!(0 T0);
+impl_tuple!(0 T0, 1 T1);
+impl_tuple!(0 T0, 1 T1, 2 T2);
+impl_tuple!(0 T0, 1 T1, 2 T2, 3 T3);
+
+impl Serialize for Instant {
+    fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let duration = self.duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid timestamp"))?;
+        writer.write_u64::<std::io::LittleEndian>(duration.as_nanos() as u64)?;
+        Ok(())
     }
 }
 
-impl<T: Serialize> Serialize for Box<T> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        self.as_ref().serialize(writer)
-    }
-}
-
-impl<T: Deserialize> Deserialize for Box<T> {
-    fn deserialize(reader: BitReader) -> io::Result<(Self, BitReader)> {
-        let (value, reader) = T::deserialize(reader)?;
-        Ok((Box::new(value), reader))
-    }
-}
-
-impl<T: Serialize> Serialize for Rc<T> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        self.as_ref().serialize(writer)
-    }
-}
-
-impl<T: Serialize> Serialize for Arc<T> {
-    fn serialize(&self, writer: BitWriter) -> io::Result<BitWriter> {
-        self.as_ref().serialize(writer)
+impl Deserialize for Instant {
+    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let nanos = reader.read_u64::<std::io::LittleEndian>()?;
+        let duration = std::time::Duration::from_nanos(nanos);
+        let instant = std::time::SystemTime::UNIX_EPOCH.checked_add(duration)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid timestamp"))?;
+        Ok(instant)
     }
 }

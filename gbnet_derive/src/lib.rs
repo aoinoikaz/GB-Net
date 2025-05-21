@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Data, Fields, Index, GenericParam, Generics, Field};
 
-#[proc_macro_derive(Serialize, attributes(serialize_all, serialize, no_serialize, bits))]
+#[proc_macro_derive(Serialize, attributes(serialize_all, no_serialize))]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -11,59 +11,53 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let serialize_all = input.attrs.iter().any(|attr| attr.path().is_ident("serialize_all"));
-    let bits_attr = input.attrs.iter().find(|attr| attr.path().is_ident("bits"));
-    let fixed_bits: Option<usize> = bits_attr.and_then(|attr| {
-        attr.parse_args::<syn::LitInt>().ok().and_then(|lit| lit.base10_parse::<usize>().ok())
-    });
 
     let serialize_body = match input.data {
         Data::Struct(data) => match data.fields {
             Fields::Named(fields) => {
                 let serialize_fields = fields.named.iter().filter_map(|f| {
+                    let name = f.ident.as_ref().unwrap();
                     if should_serialize_field(f, serialize_all) {
-                        let name = f.ident.as_ref().unwrap();
-                        Some(quote! { writer = self.#name.serialize(writer)?; })
+                        Some(quote! { self.#name.serialize(writer)?; })
                     } else {
                         None
                     }
                 });
-                quote! { #(#serialize_fields)* Ok(writer) }
+                quote! { #(#serialize_fields)* Ok(()) }
             }
             Fields::Unnamed(fields) => {
                 let serialize_fields = (0..fields.unnamed.len()).filter_map(|i| {
                     if should_serialize_field(&fields.unnamed[i], serialize_all) {
                         let index = Index::from(i);
-                        Some(quote! { writer = self.#index.serialize(writer)?; })
+                        Some(quote! { self.#index.serialize(writer)?; })
                     } else {
                         None
                     }
                 });
-                quote! { #(#serialize_fields)* Ok(writer) }
+                quote! { #(#serialize_fields)* Ok(()) }
             }
-            Fields::Unit => quote! { Ok(writer) },
+            Fields::Unit => quote! { Ok(()) },
         },
         Data::Enum(data) => {
-            let variant_count = data.variants.len();
-            let bits = fixed_bits.unwrap_or_else(|| if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize });
             let variants = data.variants.iter().enumerate().map(|(i, variant)| {
                 let variant_name = &variant.ident;
-                let variant_index = i as u64;
+                let variant_index = i as u8; // Use u8 for up to 256 variants
                 match &variant.fields {
                     Fields::Named(fields) => {
                         let field_names = fields.named.iter().map(|f| f.ident.as_ref().unwrap()).collect::<Vec<_>>();
                         let serialize_fields = fields.named.iter().filter_map(|f| {
+                            let name = f.ident.as_ref().unwrap();
                             if should_serialize_field(f, serialize_all) {
-                                let name = f.ident.as_ref().unwrap();
-                                Some(quote! { writer = #name.serialize(writer)?; })
+                                Some(quote! { #name.serialize(writer)?; })
                             } else {
                                 None
                             }
                         });
                         quote! {
                             Self::#variant_name { #(#field_names),* } => {
-                                writer = writer.write_bits(#variant_index, #bits)?;
+                                writer.write_u8(#variant_index)?;
                                 #(#serialize_fields)*
-                                Ok(writer)
+                                Ok(())
                             }
                         }
                     }
@@ -72,25 +66,25 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
                             .map(|i| syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site()))
                             .collect::<Vec<_>>();
                         let serialize_fields = fields.unnamed.iter().enumerate().filter_map(|(i, f)| {
+                            let name = &field_names[i];
                             if should_serialize_field(f, serialize_all) {
-                                let name = &field_names[i];
-                                Some(quote! { writer = #name.serialize(writer)?; })
+                                Some(quote! { #name.serialize(writer)?; })
                             } else {
                                 None
                             }
                         });
                         quote! {
                             Self::#variant_name(#(#field_names),*) => {
-                                writer = writer.write_bits(#variant_index, #bits)?;
+                                writer.write_u8(#variant_index)?;
                                 #(#serialize_fields)*
-                                Ok(writer)
+                                Ok(())
                             }
                         }
                     }
                     Fields::Unit => quote! {
                         Self::#variant_name => {
-                            writer = writer.write_bits(#variant_index, #bits)?;
-                            Ok(writer)
+                            writer.write_u8(#variant_index)?;
+                            Ok(())
                         }
                     },
                 }
@@ -101,8 +95,8 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl #impl_generics Serialize for #name #ty_generics #where_clause {
-            fn serialize(&self, mut writer: crate::bit_io::BitWriter) -> ::std::io::Result<crate::bit_io::BitWriter> {
+        impl #impl_generics crate::serialize::Serialize for #name #ty_generics #where_clause {
+            fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
                 #serialize_body
             }
         }
@@ -111,7 +105,7 @@ pub fn derive_serialize(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-#[proc_macro_derive(Deserialize, attributes(serialize_all, serialize, no_serialize, bits))]
+#[proc_macro_derive(Deserialize, attributes(serialize_all, no_serialize))]
 pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -120,10 +114,6 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let serialize_all = input.attrs.iter().any(|attr| attr.path().is_ident("serialize_all"));
-    let bits_attr = input.attrs.iter().find(|attr| attr.path().is_ident("bits"));
-    let fixed_bits: Option<usize> = bits_attr.and_then(|attr| {
-        attr.parse_args::<syn::LitInt>().ok().and_then(|lit| lit.base10_parse::<usize>().ok())
-    });
 
     let deserialize_body = match input.data {
         Data::Struct(data) => match data.fields {
@@ -143,16 +133,16 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                     }
                 });
                 let deserialize_fields = fields.named.iter().filter_map(|f| {
+                    let name = f.ident.as_ref().unwrap();
                     if should_serialize_field(f, serialize_all) {
-                        let name = f.ident.as_ref().unwrap();
-                        Some(quote! { let (#name, reader) = Deserialize::deserialize(reader)?; })
+                        Some(quote! { let #name = crate::serialize::Deserialize::deserialize(reader)?; })
                     } else {
                         None
                     }
                 });
                 quote! {
                     #(#deserialize_fields)*
-                    Ok((Self { #(#field_names,)* #(#field_defaults),* }, reader))
+                    Ok(Self { #(#field_names,)* #(#field_defaults),* })
                 }
             }
             Fields::Unnamed(fields) => {
@@ -174,26 +164,24 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                         }
                     });
                 let deserialize_fields = fields.unnamed.iter().enumerate().filter_map(|(i, f)| {
+                    let name = syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site());
                     if should_serialize_field(f, serialize_all) {
-                        let name = syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site());
-                        Some(quote! { let (#name, reader) = Deserialize::deserialize(reader)?; })
+                        Some(quote! { let #name = crate::serialize::Deserialize::deserialize(reader)?; })
                     } else {
                         None
                     }
                 });
                 quote! {
                     #(#deserialize_fields)*
-                    Ok((Self(#(#field_names,)* #(#field_defaults),*), reader))
+                    Ok(Self(#(#field_names,)* #(#field_defaults),*))
                 }
             }
-            Fields::Unit => quote! { Ok((Self, reader)) },
+            Fields::Unit => quote! { Ok(Self) },
         },
         Data::Enum(data) => {
-            let variant_count = data.variants.len();
-            let bits = fixed_bits.unwrap_or_else(|| if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize });
             let variants = data.variants.iter().enumerate().map(|(i, variant)| {
                 let variant_name = &variant.ident;
-                let variant_index = i as u64;
+                let variant_index = i as u8;
                 match &variant.fields {
                     Fields::Named(fields) => {
                         let field_names = fields.named.iter().filter_map(|f| {
@@ -211,9 +199,9 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                             }
                         });
                         let deserialize_fields = fields.named.iter().filter_map(|f| {
+                            let name = f.ident.as_ref().unwrap();
                             if should_serialize_field(f, serialize_all) {
-                                let name = f.ident.as_ref().unwrap();
-                                Some(quote! { let (#name, reader) = Deserialize::deserialize(reader)?; })
+                                Some(quote! { let #name = crate::serialize::Deserialize::deserialize(reader)?; })
                             } else {
                                 None
                             }
@@ -221,7 +209,7 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                         quote! {
                             #variant_index => {
                                 #(#deserialize_fields)*
-                                Ok((Self::#variant_name { #(#field_names,)* #(#field_defaults),* }, reader))
+                                Ok(Self::#variant_name { #(#field_names,)* #(#field_defaults),* })
                             }
                         }
                     }
@@ -231,10 +219,10 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                                 if should_serialize_field(&fields.unnamed[i], serialize_all) {
                                     Some(syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site()))
                                 } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>();
                         let field_defaults = (0..fields.unnamed.len())
                             .filter_map(|i| {
                                 if !should_serialize_field(&fields.unnamed[i], serialize_all) {
@@ -244,9 +232,9 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                                 }
                             });
                         let deserialize_fields = fields.unnamed.iter().enumerate().filter_map(|(i, f)| {
+                            let name = syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site());
                             if should_serialize_field(f, serialize_all) {
-                                let name = syn::Ident::new(&format!("field_{i}"), proc_macro2::Span::call_site());
-                                Some(quote! { let (#name, reader) = Deserialize::deserialize(reader)?; })
+                                Some(quote! { let #name = crate::serialize::Deserialize::deserialize(reader)?; })
                             } else {
                                 None
                             }
@@ -254,20 +242,20 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
                         quote! {
                             #variant_index => {
                                 #(#deserialize_fields)*
-                                Ok((Self::#variant_name(#(#field_names,)* #(#field_defaults),*), reader))
+                                Ok(Self::#variant_name(#(#field_names,)* #(#field_defaults),*))
                             }
                         }
                     }
                     Fields::Unit => quote! {
-                        #variant_index => Ok((Self::#variant_name, reader))
+                        #variant_index => Ok(Self::#variant_name)
                     },
                 }
             });
             quote! {
-                let (variant_index, reader) = reader.read_bits(#bits)?;
+                let variant_index = reader.read_u8()?;
                 match variant_index {
                     #(#variants),*
-                    _ => Err(::std::io::Error::new(::std::io::ErrorKind::InvalidData, "Unknown variant index")),
+                    _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unknown variant index")),
                 }
             }
         },
@@ -275,8 +263,8 @@ pub fn derive_deserialize(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        impl #impl_generics Deserialize for #name #ty_generics #where_clause {
-            fn deserialize(mut reader: crate::bit_io::BitReader) -> ::std::io::Result<(Self, crate::bit_io::BitReader)> {
+        impl #impl_generics crate::serialize::Deserialize for #name #ty_generics #where_clause {
+            fn deserialize<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
                 #deserialize_body
             }
         }
@@ -295,14 +283,6 @@ fn add_trait_bounds(mut generics: Generics, bound: proc_macro2::TokenStream) -> 
 }
 
 fn should_serialize_field(field: &Field, serialize_all: bool) -> bool {
-    let has_serialize = field.attrs.iter().any(|attr| attr.path().is_ident("serialize"));
     let has_no_serialize = field.attrs.iter().any(|attr| attr.path().is_ident("no_serialize"));
-    
-    if has_no_serialize {
-        return false;
-    }
-    if has_serialize {
-        return true;
-    }
-    serialize_all
+    !has_no_serialize && serialize_all
 }
