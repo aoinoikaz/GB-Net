@@ -1,18 +1,23 @@
-use crate::serialize::{Serialize, Deserialize};
+use crate::serialize::{Serialize, Deserialize, BitSerialize, BitDeserialize};
 use std::io;
 use std::time::Instant;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BitSerialize, BitDeserialize)]
 #[serialize_all]
 pub struct PacketHeader {
+    #[bits(16)]
     pub sequence: u16,
+    #[bits(16)]
     pub ack: u16,
+    #[bits(16)]
     pub ack_bits: u16,
+    #[bits(16)]
     pub connection_id: u16,
     pub timestamp: Option<Instant>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BitSerialize, BitDeserialize)]
+#[bits(4)] // 7 variants, needs 4 bits
 pub enum PacketType {
     ConnectRequest,
     ConnectAccept,
@@ -23,7 +28,7 @@ pub enum PacketType {
     SnapshotDelta { data: Vec<u8> },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BitSerialize, BitDeserialize)]
 #[serialize_all]
 pub struct Packet {
     pub header: PacketHeader,

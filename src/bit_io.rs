@@ -1,4 +1,18 @@
-use std::io;
+use std::io::{self, Read, Write};
+
+pub trait BitWrite: Write {
+    fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()>;
+    fn write_bit(&mut self, bit: bool) -> io::Result<()> {
+        self.write_bits(if bit { 1 } else { 0 }, 1)
+    }
+}
+
+pub trait BitRead: Read {
+    fn read_bits(&mut self, bits: usize) -> io::Result<u64>;
+    fn read_bit(&mut self) -> io::Result<bool> {
+        self.read_bits(1).map(|v| v != 0)
+    }
+}
 
 pub struct BitWriter {
     buffer: Vec<u8>,
@@ -20,23 +34,24 @@ impl BitWriter {
         }
     }
 
-    pub fn write_bit(&mut self, bit: bool) -> io::Result<()> {
-        let byte_index = self.bit_offset / 8;
-        let bit_index = self.bit_offset % 8;
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.buffer
+    }
+}
 
-        if byte_index >= self.buffer.len() {
-            self.buffer.push(0);
-        }
-
-        if bit {
-            self.buffer[byte_index] |= 1 << (7 - bit_index);
-        }
-
-        self.bit_offset += 1;
-        Ok(())
+impl Write for BitWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
     }
 
-    pub fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl BitWrite for BitWriter {
+    fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
         if bits > 64 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot write more than 64 bits"));
         }
@@ -65,34 +80,6 @@ impl BitWriter {
 
         Ok(())
     }
-
-    pub fn write_f32(&mut self, value: f32) -> io::Result<()> {
-        self.write_bits(value.to_bits() as u64, 32)
-    }
-
-    pub fn write_f64(&mut self, value: f64) -> io::Result<()> {
-        self.write_bits(value.to_bits(), 64)
-    }
-
-    pub fn write_u8(&mut self, value: u8) -> io::Result<()> {
-        self.write_bits(value as u64, 8)
-    }
-
-    pub fn write_u16(&mut self, value: u16) -> io::Result<()> {
-        self.write_bits(value as u64, 16)
-    }
-
-    pub fn write_u32(&mut self, value: u32) -> io::Result<()> {
-        self.write_bits(value as u64, 32)
-    }
-
-    pub fn write_i32(&mut self, value: i32) -> io::Result<()> {
-        self.write_bits(value as u64, 32)
-    }
-
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buffer
-    }
 }
 
 pub struct BitReader {
@@ -107,21 +94,21 @@ impl BitReader {
             bit_offset: 0,
         }
     }
+}
 
-    pub fn read_bit(&mut self) -> io::Result<bool> {
-        let byte_index = self.bit_offset / 8;
-        let bit_index = self.bit_offset % 8;
-
-        if byte_index >= self.buffer.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Buffer too short"));
-        }
-
-        let bit = (self.buffer[byte_index] & (1 << (7 - bit_index))) != 0;
-        self.bit_offset += 1;
-        Ok(bit)
+impl Read for BitReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let bytes_left = self.buffer.len() - (self.bit_offset / 8);
+        let bytes_to_read = std::cmp::min(buf.len(), bytes_left);
+        let start = self.bit_offset / 8;
+        buf[..bytes_to_read].copy_from_slice(&self.buffer[start..start + bytes_to_read]);
+        self.bit_offset += bytes_to_read * 8;
+        Ok(bytes_to_read)
     }
+}
 
-    pub fn read_bits(&mut self, bits: usize) -> io::Result<u64> {
+impl BitRead for BitReader {
+    fn read_bits(&mut self, bits: usize) -> io::Result<u64> {
         if bits > 64 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Cannot read more than 64 bits"));
         }
@@ -147,35 +134,5 @@ impl BitReader {
         }
 
         Ok(value)
-    }
-
-    pub fn read_f32(&mut self) -> io::Result<f32> {
-        let bits = self.read_bits(32)?;
-        Ok(f32::from_bits(bits as u32))
-    }
-
-    pub fn read_f64(&mut self) -> io::Result<f64> {
-        let bits = self.read_bits(64)?;
-        Ok(f64::from_bits(bits))
-    }
-
-    pub fn read_u8(&mut self) -> io::Result<u8> {
-        let bits = self.read_bits(8)?;
-        Ok(bits as u8)
-    }
-
-    pub fn read_u16(&mut self) -> io::Result<u16> {
-        let bits = self.read_bits(16)?;
-        Ok(bits as u16)
-    }
-
-    pub fn read_u32(&mut self) -> io::Result<u32> {
-        let bits = self.read_bits(32)?;
-        Ok(bits as u32)
-    }
-
-    pub fn read_i32(&mut self) -> io::Result<i32> {
-        let bits = self.read_bits(32)?;
-        Ok(bits as i32)
     }
 }
