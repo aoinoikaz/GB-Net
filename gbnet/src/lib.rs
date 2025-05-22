@@ -75,7 +75,9 @@ mod tests {
         BitSerialize, BitDeserialize, bit_io::{BitBuffer, BitWrite, generate_bit_pattern},
     };
     use std::io::ErrorKind;
-    use std::env;
+    use std::{env, thread};
+    use std::net::{SocketAddr, UdpSocket};
+    use std::time::Duration;
     use log::debug;
 
     fn init_logger() {
@@ -124,6 +126,17 @@ mod tests {
             bit_string.trim()
         );
         bit_string.trim().to_string()
+    }
+
+    fn compare_bit_patterns(actual: &str, expected: &str, bit_length: usize) -> bool {
+        let flushed_length = (bit_length + 7) / 8 * 8;
+        let padded_actual = format!("{:0<width$}", actual.replace(" ", ""), width = flushed_length);
+        let padded_expected = format!("{:0<width$}", expected, width = flushed_length);
+        debug!(
+            "Comparing bit patterns:\nActual (padded): {}\nExpected (padded): {}",
+            padded_actual, padded_expected
+        );
+        padded_actual == padded_expected
     }
 
     #[test]
@@ -784,4 +797,145 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+fn test_spell_effect_packet_server() -> std::io::Result<()> {
+    init_logger();
+    debug!("Starting test_spell_effect_packet_server");
+
+    // [Struct definitions: Entity, SpellEffectType, SpellEffectPacket]
+    #[derive(NetworkSerialize, Debug, PartialEq)]
+    struct Entity {
+        id: u16,
+        #[bits = 12]
+        x_pos: u16,
+        #[bits = 12]
+        y_pos: u16,
+        #[bits = 6]
+        magnitude: u8,
+    }
+
+    #[derive(NetworkSerialize, Debug, PartialEq)]
+    enum SpellEffectType {
+        Damage { #[bits = 8] base_damage: u8 },
+        Heal { #[bits = 8] heal_amount: u8 },
+        Buff { #[bits = 4] stat_boost: u8 },
+    }
+
+    #[derive(NetworkSerialize, Debug, PartialEq)]
+    #[default_bits(u8 = 4, u16 = 10, bool = 1)]
+    #[default_max_len = 8]
+    struct SpellEffectPacket {
+        spell_id: u16,
+        caster: Entity,
+        effect_type: SpellEffectType,
+        #[max_len = 4]
+        targets: Vec<Entity>,
+        #[bits = 10]
+        duration: u16,
+        #[no_serialize]
+        debug_info: String,
+    }
+
+    let packet = SpellEffectPacket {
+        spell_id: 123,
+        caster: Entity {
+            id: 1001,
+            x_pos: 2048,
+            y_pos: 1024,
+            magnitude: 50,
+        },
+        effect_type: SpellEffectType::Damage { base_damage: 75 },
+        targets: vec![
+            Entity {
+                id: 2001,
+                x_pos: 2050,
+                y_pos: 1026,
+                magnitude: 40,
+            },
+            Entity {
+                id: 2002,
+                x_pos: 2046,
+                y_pos: 1022,
+                magnitude: 45,
+            },
+        ],
+        duration: 500,
+        debug_info: "Fireball cast".to_string(),
+    };
+
+    let bit_length = 10 + 40 + 9 + 3 + 2 * 40 + 10;
+    debug!("Expected bit length: {}", bit_length);
+
+    // [Serialization, UDP transmission, and deserialization]
+    let mut bit_buffer = BitBuffer::new();
+    packet.bit_serialize(&mut bit_buffer)?;
+    bit_buffer.flush()?;
+    let bytes = bit_buffer.into_bytes();
+    debug!("Server serialized bytes: {:?}", bytes);
+
+    let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server_socket = UdpSocket::bind(server_addr)?;
+    server_socket.set_nonblocking(true)?;
+    let server_addr = server_socket.local_addr()?;
+
+    let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let client_socket = UdpSocket::bind(client_addr)?;
+    client_socket.set_nonblocking(true)?;
+
+    server_socket.send_to(&bytes, client_socket.local_addr()?)?;
+    debug!("Server sent packet to client");
+
+    let mut recv_buffer = [0u8; 1024];
+    let mut received = None;
+    for _ in 0..10 {
+        match client_socket.recv_from(&mut recv_buffer) {
+            Ok((size, addr)) if addr == server_addr => {
+                received = Some(recv_buffer[..size].to_vec());
+                break;
+            }
+            Ok(_) => {}
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    let received_bytes = received.ok_or_else(|| {
+        std::io::Error::new(ErrorKind::TimedOut, "Client failed to receive packet")
+    })?;
+    debug!("Client received bytes: {:?}", received_bytes);
+
+    let mut bit_buffer = BitBuffer::from_bytes(received_bytes);
+    let deserialized = SpellEffectPacket::bit_deserialize(&mut bit_buffer)?;
+    debug!("Deserialized packet: {:?}", deserialized);
+
+    // Validate deserialized packet
+    assert_eq!(deserialized.spell_id, packet.spell_id);
+    assert_eq!(deserialized.caster, packet.caster);
+    assert_eq!(deserialized.targets, packet.targets);
+    assert_eq!(deserialized.duration, packet.duration);
+    assert_eq!(deserialized.debug_info, "");
+    match (deserialized.effect_type, &packet.effect_type) {
+        (SpellEffectType::Damage { base_damage: d1 }, SpellEffectType::Damage { base_damage: d2 }) => {
+            assert_eq!(d1, *d2);
+        }
+        _ => panic!("Effect type mismatch"),
+    }
+
+    // Validate bit pattern
+    let bit_string = print_bit_buffer(&bytes, bit_length, "SpellEffectPacket");
+    let (expected_bit_pattern, expected_bit_length) = generate_bit_pattern(&packet)?;
+    assert!(
+        compare_bit_patterns(&bit_string, &expected_bit_pattern, bit_length),
+        "Incorrect bit pattern: actual='{}', expected='{}'",
+        bit_string.replace(" ", ""),
+        expected_bit_pattern
+    );
+    assert!(bytes.len() <= (expected_bit_length + 7) / 8);
+
+    Ok(())
+}
+
 }
