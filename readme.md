@@ -1,44 +1,46 @@
-GBNet
+# GBNet #
+
 GBNet is a Rust library for multiplayer game networking, designed for efficient, reliable, and high-performance real-time games. Its cornerstone is a powerful serialization system that supports both bit-packed and byte-aligned serialization/deserialization, optimized to minimize bandwidth while handling complex data structures. Paired with a robust networking stack, GBNet enables seamless multiplayer experiences with features like reliable messaging, state synchronization, and more.
-Features
 
-Advanced Serialization: Bit-packed and byte-aligned serialization/deserialization for structs, enums, and vectors, with fine-grained control over data encoding.
-Bit-Level Control: Custom bit sizes via #[bits = N] and defaults with #[default_bits].
-Byte Alignment: Align fields to byte boundaries using #[byte_align].
-Field Skipping: Exclude fields with #[no_serialize].
-Vector Length Limits: Cap vectors with #[max_len = N] or #[default_max_len].
-Connections: Client-server and peer-to-peer connection management.
-Reliable Messages: Guaranteed message delivery over UDP.
-Large Data Transfer: Fragmentation for large payloads.
-Packet Fragmentation: Efficient packet splitting and reassembly.
-Packet Delivery: Ordered and reliable packet delivery.
-State Synchronization: Game state syncing across clients.
-Snapshot Compression: Compressed game state snapshots.
-Snapshot Interpolation: Smooth client-side interpolation.
-Deterministic Lockstep: Lockstep support for strategy games.
-Congestion Avoidance: Network congestion prevention.
-Fixed Timestep: Consistent game updates.
+## Features ##
 
-Installation
+-Advanced Serialization: Bit-packed and byte-aligned serialization/deserialization for structs, enums, and vectors, with fine-grained control over data encoding.
+-Bit-Level Control: Custom bit sizes via #[bits = N] and defaults with #[default_bits].
+-Byte Alignment: Align fields to byte boundaries using #[byte_align].
+-Field Skipping: Exclude fields with #[no_serialize].
+-Vector Length Limits: Cap vectors with #[max_len = N] or #[default_max_len].
+-Connections: Client-server and peer-to-peer connection management.
+-Reliable Messages: Guaranteed message delivery over UDP.
+-Large Data Transfer: Fragmentation for large payloads.
+-Packet Fragmentation: Efficient packet splitting and reassembly.
+-Packet Delivery: Ordered and reliable packet delivery.
+-State Synchronization: Game state syncing across clients.
+-Snapshot Compression: Compressed game state snapshots.
+-Snapshot Interpolation: Smooth client-side interpolation.
+-Deterministic Lockstep: Lockstep support for strategy games.
+-Congestion Avoidance: Network congestion prevention.
+-Fixed Timestep: Consistent game updates.
+
+## Installation ##
 Add GBNet to your Cargo.toml:
 [dependencies]
-gbnet = { git = "https://github.com/yourusername/gbnet.git" }
-gbnet_macros = { git = "https://github.com/yourusername/gbnet.git" }
+gbnet = { git = "https://github.com/gondolabros/gbnet.git" }
+gbnet_macros = { git = "https://github.com/gondolabros/gbnet.git" }
 
-Note: Replace yourusername with your GitHub username. Ensure the repository hosts gbnet and gbnet_macros.
-Usage
+## Usage ##
 GBNet’s serialization is powered by the NetworkSerialize macro, which derives bit- and byte-aligned serialization/deserialization for structs, enums, and vectors. It’s built for efficiency, allowing developers to optimize bandwidth with bit-level precision while supporting complex data like nested structs, enums with payloads, and length-capped vectors.
 Serialization Capabilities
 
-Bit-Packed Serialization: Encodes fields with custom bit counts using #[bits = N], e.g., a u8 as 6 bits to save bandwidth.
-Byte-Aligned Serialization: Pads fields to byte boundaries with #[byte_align], ideal for byte-oriented protocols.
-Annotations:
-#[bits = N]: Sets bit count for a field (e.g., #[bits = 6] for a 6-bit u8).
-#[byte_align]: Pads to a byte boundary before the annotated field.
-#[no_serialize]: Skips a field, using its default value on deserialization.
-#[max_len = N]: Caps vector lengths, encoding length in ceil(log2(N+1)) bits.
-#[default_bits(type = N)]: Sets default bit sizes (e.g., u8 = 4, u16 = 10).
-#[default_max_len = N]: Default max length for vectors without #[max_len].
+-Bit-Packed Serialization: Encodes fields with custom bit counts using #[bits = N], e.g., a u8 as 6 bits to save bandwidth.
+-Byte-Aligned Serialization: Pads fields to byte boundaries with #[byte_align], ideal for byte-oriented protocols.
+
+### Annotations: ###
+-[bits = N]: Sets bit count for a field (e.g., #[bits = 6] for a 6-bit u8).
+-[byte_align]: Pads to a byte boundary before the annotated field.
+-[no_serialize]: Skips a field, using its default value on deserialization.
+-[max_len = N]: Caps vector lengths, encoding length in ceil(log2(N+1)) bits.
+-[default_bits(type = N)]: Sets default bit sizes (e.g., u8 = 4, u16 = 10).
+-[default_max_len = N]: Default max length for vectors without #[max_len].
 
 
 Structs and Enums: Handles nested structs and enums with payloads (e.g., Running { speed: u8 }).
@@ -49,6 +51,8 @@ Testing: Comprehensive test suite validates primitives, vectors, enums, nested s
 Examples
 1. Bit-Packed Serialization with Custom Bits
 Serialize a struct with custom bit sizes:
+
+```rust
 use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
 use gbnet_macros::NetworkSerialize;
 
@@ -68,7 +72,7 @@ fn main() -> std::io::Result<()> {
     let bytes = bit_buffer.into_bytes();
     println!("Serialized bytes: {:?}", bytes); // [15, 202]
     Ok(())
-}
+}```
 
 Serializes a (8 bits: 00001111), b (6 bits: 110010), c (1 bit: 1), totaling 15 bits, padded to 16 bits.
 2. Skipping Fields with #[no_serialize]
