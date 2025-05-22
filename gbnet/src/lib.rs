@@ -208,7 +208,7 @@ mod tests {
         },
     };
     debug!("Starting test_complex_nested_structure with packet: id={}, flags={}, players={:?}, status={:?}, settings={:?}",
-           packet.id, packet.flags, packet.players, packet.status, packet.settings);
+    packet.id, packet.flags, packet.players, packet.status, packet.settings);
     let mut bit_buffer = BitBuffer::new();
     packet.bit_serialize(&mut bit_buffer)?;
     bit_buffer.flush()?;

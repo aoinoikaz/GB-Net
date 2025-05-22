@@ -600,7 +600,7 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                                 quote! { writer.write_bits(*#name as u64, #bits)?; }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                    let len_bits = (max_len as f64).log2().ceil() as usize;
+                                    let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
                                     let default_len_bits = 16usize;
@@ -797,7 +797,7 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                 }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                    let len_bits = (max_len as f64).log2().ceil() as usize;
+                                    let len_bits = ((max_len +1) as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
                                     let default_len_bits = 16usize;
