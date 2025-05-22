@@ -4,11 +4,14 @@ GBNet is a Rust library for multiplayer game networking, designed for efficient,
 
 ## Features ##
 
--Advanced Serialization: Bit-packed and byte-aligned serialization/deserialization for structs, enums, and vectors, with fine-grained control over data encoding.
+### Advanced Serialization: ###
+-Bit-packed and byte-aligned serialization/deserialization for structs, enums, and vectors, with fine-grained control over data encoding.
 -Bit-Level Control: Custom bit sizes via #[bits = N] and defaults with #[default_bits].
 -Byte Alignment: Align fields to byte boundaries using #[byte_align].
 -Field Skipping: Exclude fields with #[no_serialize].
 -Vector Length Limits: Cap vectors with #[max_len = N] or #[default_max_len].
+
+### Advanced networking capabilities ###
 -Connections: Client-server and peer-to-peer connection management.
 -Reliable Messages: Guaranteed message delivery over UDP.
 -Large Data Transfer: Fragmentation for large payloads.
@@ -29,7 +32,8 @@ gbnet_macros = { git = "https://github.com/gondolabros/gbnet.git" }
 
 ## Usage ##
 GBNet’s serialization is powered by the NetworkSerialize macro, which derives bit- and byte-aligned serialization/deserialization for structs, enums, and vectors. It’s built for efficiency, allowing developers to optimize bandwidth with bit-level precision while supporting complex data like nested structs, enums with payloads, and length-capped vectors.
-Serialization Capabilities
+
+### Serialization Capabilities ###
 
 -Bit-Packed Serialization: Encodes fields with custom bit counts using #[bits = N], e.g., a u8 as 6 bits to save bandwidth.
 -Byte-Aligned Serialization: Pads fields to byte boundaries with #[byte_align], ideal for byte-oriented protocols.
@@ -41,7 +45,6 @@ Serialization Capabilities
 -[max_len = N]: Caps vector lengths, encoding length in ceil(log2(N+1)) bits.
 -[default_bits(type = N)]: Sets default bit sizes (e.g., u8 = 4, u16 = 10).
 -[default_max_len = N]: Default max length for vectors without #[max_len].
-
 
 Structs and Enums: Handles nested structs and enums with payloads (e.g., Running { speed: u8 }).
 Vectors: Supports dynamic-length vectors with length caps.
@@ -75,8 +78,12 @@ fn main() -> std::io::Result<()> {
 }```
 
 Serializes a (8 bits: 00001111), b (6 bits: 110010), c (1 bit: 1), totaling 15 bits, padded to 16 bits.
+
+
 2. Skipping Fields with #[no_serialize]
 Exclude fields from serialization:
+
+```rust
 use gbnet::serialize::{BitSerialize, BitDeserialize, bit_io::BitBuffer};
 use gbnet_macros::NetworkSerialize;
 
@@ -109,11 +116,15 @@ fn main() -> std::io::Result<()> {
     assert_eq!(deserialized.b, 0); // Default
     assert_eq!(deserialized.d, ""); // Default
     Ok(())
-}
+}```
 
 Serializes a (8 bits) and c (1 bit), totaling 9 bits, padded to 16 bits. Skipped fields use defaults.
+
+
 3. Vector with Length Limits
 Serialize a capped vector:
+
+```rust
 use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
 use gbnet_macros::NetworkSerialize;
 
@@ -132,11 +143,14 @@ fn main() -> std::io::Result<()> {
     let bytes = bit_buffer.into_bytes();
     println!("Serialized bytes: {:?}", bytes); // [128, 64, 128]
     Ok(())
-}
+}```
 
 Serializes length (2 bits: 10), then data=[1, 2] (8 bits each: 00000001, 00000010), totaling 18 bits, padded to 24 bits.
+
 4. Byte Alignment
 Align fields to byte boundaries:
+
+```rust
 use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
 use gbnet_macros::NetworkSerialize;
 
@@ -155,7 +169,7 @@ fn main() -> std::io::Result<()> {
     let bytes = bit_buffer.into_bytes();
     println!("Serialized bytes: {:?}", bytes); // [128, 10]
     Ok(())
-}
+}```
 
 Serializes a (1 bit: 1), pads (7 bits: 0000000), then b (8 bits: 00001010), totaling 16 bits.
 5. Complex Nested Structures
