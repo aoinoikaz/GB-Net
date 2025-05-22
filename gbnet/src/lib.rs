@@ -67,6 +67,7 @@ pub struct LargeGamePacket {
     players: Vec<PlayerState>,        // 4 bits for length (ceil(log2(9)))
     status: PlayerStatus,             // 1 bit + payload
 }
+
 #[cfg(test)]
 mod tests {
     use crate::{PlayerState, PlayerStatus};
@@ -81,7 +82,6 @@ mod tests {
         env::set_var("RUST_LOG", "debug,gbnet::serialize::bit_io=trace");
         let _ = env_logger::builder().is_test(true).try_init();
     }
-
 
     fn print_bit_buffer(buffer: &[u8], bit_length: usize, field_desc: &str) -> String {
         debug!(
@@ -246,7 +246,6 @@ mod tests {
         Ok(())
     }
 
-   
     #[test]
     fn test_byte_alignment() -> std::io::Result<()> {
         init_logger();
@@ -582,6 +581,206 @@ mod tests {
             vec![3, 4],
             "Expected settings.effects=[3, 4], got {:?}",
             deserialized.settings.effects
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_no_serialize() -> std::io::Result<()> {
+        init_logger();
+        #[derive(NetworkSerialize, Debug, PartialEq)]
+        struct NoSerializePacket {
+            a: u8,                   // 8 bits (macro default)
+            #[no_serialize]
+            b: u16,                  // Skipped
+            c: bool,                 // 1 bit
+            #[no_serialize]
+            d: String,               // Skipped
+        }
+        let packet = NoSerializePacket {
+            a: 42,
+            b: 9999, // Should be ignored
+            c: true,
+            d: "test".to_string(), // Should be ignored
+        };
+        debug!(
+            "Starting test_no_serialize with packet: a={}, b={}, c={}, d={}",
+            packet.a, packet.b, packet.c, packet.d
+        );
+        let mut bit_buffer = BitBuffer::new();
+        packet.bit_serialize(&mut bit_buffer)?;
+        bit_buffer.flush()?;
+        let bit_data = bit_buffer.into_bytes();
+        let bit_length = 8 + 1; // a (8) + c (1) = 9 bits
+        let bit_string = print_bit_buffer(&bit_data, bit_length, "NoSerializePacket");
+
+        // Generate expected bit pattern
+        let (expected_bit_pattern, expected_bit_length) = generate_bit_pattern(&packet)?;
+        assert_eq!(
+            bit_string.replace(" ", ""),
+            expected_bit_pattern,
+            "Incorrect bit pattern"
+        );
+        assert!(
+            bit_data.len() <= (expected_bit_length + 7) / 8,
+            "Expected ~{} bits ({} bytes), got {} bytes",
+            expected_bit_length,
+            (expected_bit_length + 7) / 8,
+            bit_data.len()
+        );
+
+        let mut bit_buffer = BitBuffer::from_bytes(bit_data);
+        let deserialized = NoSerializePacket::bit_deserialize(&mut bit_buffer)?;
+        debug!(
+            "Deserialized packet: a={}, b={}, c={}, d={}",
+            deserialized.a, deserialized.b, deserialized.c, deserialized.d
+        );
+        assert_eq!(
+            deserialized.a, 42,
+            "Expected a=42, got {}",
+            deserialized.a
+        );
+        assert_eq!(
+            deserialized.c, true,
+            "Expected c=true, got {}",
+            deserialized.c
+        );
+        // Non-serialized fields should retain default values
+        assert_eq!(
+            deserialized.b, 0,
+            "Expected b=0 (default), got {}",
+            deserialized.b
+        );
+        assert_eq!(
+            deserialized.d, "",
+            "Expected d='' (default), got {}",
+            deserialized.d
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_default_bit_sizes() -> std::io::Result<()> {
+        init_logger();
+        #[derive(NetworkSerialize, Debug, PartialEq)]
+        #[default_bits(u8 = 4, u16 = 10, bool = 1)]
+        struct DefaultBitPacket {
+            a: u8,      // 4 bits (default)
+            b: u16,     // 10 bits (default)
+            c: bool,    // 1 bit (default)
+        }
+        let packet = DefaultBitPacket {
+            a: 15,
+            b: 1023,
+            c: false,
+        };
+        debug!(
+            "Starting test_default_bit_sizes with packet: a={}, b={}, c={}",
+            packet.a, packet.b, packet.c
+        );
+        let mut bit_buffer = BitBuffer::new();
+        packet.bit_serialize(&mut bit_buffer)?;
+        bit_buffer.flush()?;
+        let bit_data = bit_buffer.into_bytes();
+        let bit_length = 4 + 10 + 1; // a (4) + b (10) + c (1) = 15 bits
+        let bit_string = print_bit_buffer(&bit_data, bit_length, "DefaultBitPacket");
+
+        // Generate expected bit pattern
+        let (expected_bit_pattern, expected_bit_length) = generate_bit_pattern(&packet)?;
+        assert_eq!(
+            bit_string.replace(" ", ""),
+            expected_bit_pattern,
+            "Incorrect bit pattern"
+        );
+        assert!(
+            bit_data.len() <= (expected_bit_length + 7) / 8,
+            "Expected ~{} bits ({} bytes), got {} bytes",
+            expected_bit_length,
+            (expected_bit_length + 7) / 8,
+            bit_data.len()
+        );
+
+        let mut bit_buffer = BitBuffer::from_bytes(bit_data);
+        let deserialized = DefaultBitPacket::bit_deserialize(&mut bit_buffer)?;
+        debug!(
+            "Deserialized packet: a={}, b={}, c={}",
+            deserialized.a, deserialized.b, deserialized.c
+        );
+        assert_eq!(
+            deserialized.a, 15,
+            "Expected a=15, got {}",
+            deserialized.a
+        );
+        assert_eq!(
+            deserialized.b, 1023,
+            "Expected b=1023, got {}",
+            deserialized.b
+        );
+        assert_eq!(
+            deserialized.c, false,
+            "Expected c=false, got {}",
+            deserialized.c
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_vector() -> std::io::Result<()> {
+        init_logger();
+        #[derive(NetworkSerialize, Debug, PartialEq)]
+        #[default_max_len = 4]
+        struct EmptyVecPacket {
+            id: u8,                // 8 bits (macro default)
+            #[max_len = 4]
+            data: Vec<u8>,         // 3 bits for length (ceil(log2(5)))
+        }
+        let packet = EmptyVecPacket {
+            id: 100,
+            data: vec![],
+        };
+        debug!(
+            "Starting test_empty_vector with packet: id={}, data={:?}",
+            packet.id, packet.data
+        );
+        let mut bit_buffer = BitBuffer::new();
+        packet.bit_serialize(&mut bit_buffer)?;
+        bit_buffer.flush()?;
+        let bit_data = bit_buffer.into_bytes();
+        let len_bits = ((4 + 1) as f64).log2().ceil() as usize; // ceil(log2(5)) = 3
+        let bit_length = 8 + len_bits; // id (8) + len (3) = 11 bits
+        let bit_string = print_bit_buffer(&bit_data, bit_length, "EmptyVecPacket");
+
+        // Generate expected bit pattern
+        let (expected_bit_pattern, expected_bit_length) = generate_bit_pattern(&packet)?;
+        assert_eq!(
+            bit_string.replace(" ", ""),
+            expected_bit_pattern,
+            "Incorrect bit pattern"
+        );
+        assert!(
+            bit_data.len() <= (expected_bit_length + 7) / 8,
+            "Expected ~{} bits ({} bytes), got {} bytes",
+            expected_bit_length,
+            (expected_bit_length + 7) / 8,
+            bit_data.len()
+        );
+
+        let mut bit_buffer = BitBuffer::from_bytes(bit_data);
+        let deserialized = EmptyVecPacket::bit_deserialize(&mut bit_buffer)?;
+        debug!(
+            "Deserialized packet: id={}, data={:?}",
+            deserialized.id, deserialized.data
+        );
+        assert_eq!(
+            deserialized.id, 100,
+            "Expected id=100, got {}",
+            deserialized.id
+        );
+        assert_eq!(
+            deserialized.data,
+            vec![],
+            "Expected data=[], got {:?}",
+            deserialized.data
         );
         Ok(())
     }
