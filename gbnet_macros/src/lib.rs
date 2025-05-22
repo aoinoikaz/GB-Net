@@ -140,7 +140,7 @@ fn get_field_bit_width(field: &Field, defaults: &[(String, usize)]) -> usize {
             }
         }
         match type_name.as_deref() {
-            Some("u8") | Some("i8") => 4,
+            Some("u8") | Some("i8") => 8, // Use full 8 bits for u8
             Some("u16") | Some("i16") => 16,
             Some("u32") | Some("i32") => 32,
             Some("u64") | Some("i64") => 64,
@@ -298,10 +298,18 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     let value_expr = quote! { self.#name };
                     let serialize_code = if is_bit {
                         if bits > 0 {
-                            quote! { writer.write_bits(#value_expr as u64, #bits)?; }
+                            quote! {
+                                if #value_expr as u64 > (1u64 << #bits) - 1 {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("Value {} exceeds {} bits for field {:?}", #value_expr, #bits, stringify!(#name))
+                                    ));
+                                }
+                                writer.write_bits(#value_expr as u64, #bits)?;
+                            }
                         } else if is_vec_type(&f.ty) {
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                let len_bits = ((max_len + 1 ) as f64).log2().ceil() as usize;
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
                                 let default_len_bits = 16usize;
@@ -350,10 +358,18 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     let value_expr = quote! { self.#index };
                     let serialize_code = if is_bit {
                         if bits > 0 {
-                            quote! { writer.write_bits(#value_expr as u64, #bits)?; }
+                            quote! {
+                                if #value_expr as u64 > (1u64 << #bits) - 1 {
+                                    return Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("Value {} exceeds {} bits for field {}", #value_expr, #bits, #index)
+                                    ));
+                                }
+                                writer.write_bits(#value_expr as u64, #bits)?;
+                            }
                         } else if is_vec_type(&fields.unnamed[i].ty) {
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                let len_bits = (max_len as f64).log2().ceil() as usize;
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
                                 let default_len_bits = 16usize;
@@ -433,7 +449,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                             }
                         } else if is_vec_type(&f.ty) {
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                let len_bits = ((max_len +1) as f64).log2().ceil() as usize;
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
                                 let default_len_bits = 16usize;
@@ -512,7 +528,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                             }
                         } else if is_vec_type(&f.ty) {
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                let len_bits = (max_len as f64).log2().ceil() as usize;
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
                             } else {
                                 let default_len_bits = 16usize;
@@ -597,7 +613,15 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         };
                         let serialize_code = if is_bit {
                             if bits > 0 {
-                                quote! { writer.write_bits(*#name as u64, #bits)?; }
+                                quote! {
+                                    if *#name as u64 > (1u64 << #bits) - 1 {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::InvalidData,
+                                            format!("Value {} exceeds {} bits for field {:?}", *#name, #bits, stringify!(#name))
+                                        ));
+                                    }
+                                    writer.write_bits(*#name as u64, #bits)?;
+                                }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
                                     let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
@@ -672,10 +696,18 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         };
                         let serialize_code = if is_bit {
                             if bits > 0 {
-                                quote! { writer.write_bits(*#name as u64, #bits)?; }
+                                quote! {
+                                    if *#name as u64 > (1u64 << #bits) - 1 {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::InvalidData,
+                                            format!("Value {} exceeds {} bits for field {}", *#name, #bits, #i)
+                                        ));
+                                    }
+                                    writer.write_bits(*#name as u64, #bits)?;
+                                }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                    let len_bits = (max_len as f64).log2().ceil() as usize;
+                                    let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
                                     let default_len_bits = 16usize;
@@ -797,7 +829,7 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                 }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                    let len_bits = ((max_len +1) as f64).log2().ceil() as usize;
+                                    let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
                                     let default_len_bits = 16usize;
@@ -889,7 +921,7 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                 }
                             } else if is_vec_type(&f.ty) {
                                 let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
-                                    let len_bits = (max_len as f64).log2().ceil() as usize;
+                                    let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                     (len_bits, quote! { #max_len })
                                 } else {
                                     let default_len_bits = 16usize;

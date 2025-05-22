@@ -1,8 +1,8 @@
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
-use log::{debug};
+use log::debug;
 
-// Bit I/O Module
+// Bit I/O Submodule
 pub mod bit_io {
     use std::io;
     use log::{debug, trace};
@@ -55,7 +55,13 @@ pub mod bit_io {
         fn write_bit(&mut self, bit: bool) -> io::Result<()> {
             let byte_pos = self.bit_pos / 8;
             let bit_offset = self.bit_pos % 8;
-            trace!("Writing bit: {} at byte_pos: {}, bit_offset: {}, bit_pos: {}", bit, byte_pos, bit_offset, self.bit_pos);
+            trace!(
+                "Writing bit: {} at byte_pos: {}, bit_offset: {}, bit_pos: {}",
+                bit,
+                byte_pos,
+                bit_offset,
+                self.bit_pos
+            );
 
             if byte_pos >= self.buffer.len() {
                 trace!("Extending buffer to byte_pos: {}", byte_pos);
@@ -76,9 +82,15 @@ pub mod bit_io {
         fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
             if bits > 64 {
                 debug!("Error: Attempted to write {} bits, exceeds 64", bits);
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Bits exceed 64"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Bits exceed 64",
+                ));
             }
-            debug!("Writing {} bits: {} at bit_pos: {}", bits, value, self.bit_pos);
+            debug!(
+                "Writing {} bits: {} at bit_pos: {}",
+                bits, value, self.bit_pos
+            );
             for i in (0..bits).rev() {
                 let bit = ((value >> i) & 1) != 0;
                 self.write_bit(bit)?;
@@ -104,11 +116,19 @@ pub mod bit_io {
         fn read_bit(&mut self) -> io::Result<bool> {
             let byte_pos = self.read_pos / 8;
             let bit_offset = self.read_pos % 8;
-            trace!("Reading bit at byte_pos: {}, bit_offset: {}, read_pos: {}", byte_pos, bit_offset, self.read_pos);
+            trace!(
+                "Reading bit at byte_pos: {}, bit_offset: {}, read_pos: {}",
+                byte_pos,
+                bit_offset,
+                self.read_pos
+            );
 
             if byte_pos >= self.buffer.len() {
                 debug!("Error: Buffer underflow at read_pos: {}", self.read_pos);
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Buffer underflow"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Buffer underflow",
+                ));
             }
 
             let bit = (self.buffer[byte_pos] & (1 << (7 - bit_offset))) != 0;
@@ -120,7 +140,10 @@ pub mod bit_io {
         fn read_bits(&mut self, bits: usize) -> io::Result<u64> {
             if bits > 64 {
                 debug!("Error: Attempted to read {} bits, exceeds 64", bits);
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Bits exceed 64"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Bits exceed 64",
+                ));
             }
             debug!("Reading {} bits at read_pos: {}", bits, self.read_pos);
             let mut value = 0;
@@ -134,6 +157,88 @@ pub mod bit_io {
         fn bit_pos(&self) -> usize {
             self.read_pos
         }
+    }
+
+    // Helper struct for generating bit patterns
+    pub struct BitPatternBuilder {
+        bits: String,
+        bit_pos: usize,
+    }
+
+    impl BitPatternBuilder {
+        pub fn new() -> Self {
+            BitPatternBuilder {
+                bits: String::new(),
+                bit_pos: 0,
+            }
+        }
+
+        pub fn into_string(self) -> String {
+            self.bits
+        }
+    }
+
+    impl BitWrite for BitPatternBuilder {
+        fn write_bit(&mut self, bit: bool) -> io::Result<()> {
+            self.bits.push(if bit { '1' } else { '0' });
+            self.bit_pos += 1;
+            Ok(())
+        }
+
+        fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
+            if bits > 64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Bits exceed 64",
+                ));
+            }
+            for i in (0..bits).rev() {
+                let bit = ((value >> i) & 1) != 0;
+                self.write_bit(bit)?;
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            while self.bit_pos % 8 != 0 {
+                self.write_bit(false)?;
+            }
+            Ok(())
+        }
+
+        fn bit_pos(&self) -> usize {
+            self.bit_pos
+        }
+    }
+
+    /// Generates the expected bit pattern for a type implementing `BitSerialize`.
+    /// Returns the bit string (e.g., "11110000") and the total bit length.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use gbnet::serialize::{BitSerialize, bit_io::generate_bit_pattern};
+    /// use gbnet_macros::NetworkSerialize;
+    ///
+    /// #[derive(NetworkSerialize)]
+    /// struct TestPacket {
+    ///     #[bits = 4]
+    ///     value: u8,
+    /// }
+    ///
+    /// let packet = TestPacket { value: 15 };
+    /// let (bit_pattern, bit_length) = generate_bit_pattern(&packet).unwrap();
+    /// assert_eq!(bit_pattern, "11110000"); // 4 bits for value=15 + 4 bits padding
+    /// assert_eq!(bit_length, 8); // After flush to byte boundary
+    /// ```
+    pub fn generate_bit_pattern<T: super::BitSerialize>(
+        value: &T,
+    ) -> io::Result<(String, usize)> {
+        let mut builder = BitPatternBuilder::new();
+        value.bit_serialize(&mut builder)?;
+        builder.flush()?;
+        let bit_length = builder.bit_pos();
+        Ok((builder.into_string(), bit_length))
     }
 }
 
@@ -296,14 +401,30 @@ impl<T: BitSerialize> BitSerialize for Vec<T> {
         const DEFAULT_MAX_LEN: usize = 65535; // 16 bits
         let max_len = DEFAULT_MAX_LEN;
         let len_bits = (max_len as f64).log2().ceil() as usize;
-        debug!("Serializing Vec<T> with len: {}, max_len: {}, len_bits: {}", self.len(), max_len, len_bits);
+        debug!(
+            "Serializing Vec<T> with len: {}, max_len: {}, len_bits: {}",
+            self.len(),
+            max_len,
+            len_bits
+        );
         if self.len() > max_len {
-            debug!("Error: Vector length {} exceeds max_len {}", self.len(), max_len);
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+            debug!(
+                "Error: Vector length {} exceeds max_len {}",
+                self.len(),
+                max_len
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Vector length exceeds max_len",
+            ));
         }
         writer.write_bits(self.len() as u64, len_bits)?;
         for (i, item) in self.iter().enumerate() {
-            debug!("Serializing Vec<T> item {} at bit_pos: {}", i, writer.bit_pos());
+            debug!(
+                "Serializing Vec<T> item {} at bit_pos: {}",
+                i,
+                writer.bit_pos()
+            );
             item.bit_serialize(writer)?;
         }
         Ok(())
@@ -311,7 +432,7 @@ impl<T: BitSerialize> BitSerialize for Vec<T> {
 }
 
 impl<T: BitDeserialize> BitDeserialize for Vec<T> {
-    fn bit_deserialize<R: bit_io::BitRead>(reader: &mut R) -> std::io::Result<Self> {
+    fn bit_deserialize<R: bit_io::BitRead>(reader: &mut R) -> io::Result<Self> {
         const DEFAULT_MAX_LEN: usize = 65535; // 16 bits
         let max_len = DEFAULT_MAX_LEN;
         let len_bits = (max_len as f64).log2().ceil() as usize;
@@ -319,12 +440,22 @@ impl<T: BitDeserialize> BitDeserialize for Vec<T> {
         let len = reader.read_bits(len_bits)? as usize;
         debug!("Deserialized Vec<T> length: {}", len);
         if len > max_len {
-            debug!("Error: Vector length {} exceeds max_len {}", len, max_len);
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Vector length exceeds max_len"));
+            debug!(
+                "Error: Vector length {} exceeds max_len {}",
+                len, max_len
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Vector length exceeds max_len",
+            ));
         }
         let mut vec = Vec::with_capacity(len);
         for i in 0..len {
-            debug!("Deserializing Vec<T> item {} at read_pos: {}", i, reader.bit_pos());
+            debug!(
+                "Deserializing Vec<T> item {} at read_pos: {}",
+                i,
+                reader.bit_pos()
+            );
             vec.push(T::bit_deserialize(reader)?);
         }
         Ok(vec)
