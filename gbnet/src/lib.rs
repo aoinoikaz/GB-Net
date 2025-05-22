@@ -28,12 +28,14 @@ pub struct GamePacket {
 }
 
 #[derive(NetworkSerialize)]
+#[derive(Debug)]
 pub struct PlayerState {
     #[bits = 4]
     health: u8,                       // 4 bits
 }
 
 #[derive(NetworkSerialize)]
+#[derive(Debug)]
 pub enum PlayerStatus {
     Idle,                             // 0 (1 bit)
     Running { #[bits = 4] speed: u8 }, // 1 (1 bit) + 4 bits
@@ -70,6 +72,8 @@ pub struct LargeGamePacket {
 
 #[cfg(test)]
 mod tests {
+    use crate::PlayerStatus;
+    use crate::PlayerState;
     use crate::serialize::{BitSerialize, BitDeserialize, bit_io::{BitBuffer, BitWrite}};
     use std::io::ErrorKind;
     use std::env;
@@ -161,4 +165,73 @@ mod tests {
         assert_eq!(deserialized.b, 10, "Expected b=10, got {}", deserialized.b);
         Ok(())
     }
+
+
+    #[test]
+    fn test_complex_nested_structure() -> std::io::Result<()> {
+    init_logger();
+    #[derive(NetworkSerialize, Default)]
+    #[default_bits(u8 = 4, u16 = 10, bool = 1)]
+    #[default_max_len = 16]
+    struct ComplexPacket {
+        id: u16,                      // 10 bits
+        #[bits = 6]
+        flags: u8,                    // 6 bits
+        #[max_len = 4]
+        players: Vec<PlayerState>,    // 2 bits for length (ceil(log2(5)) = 2)
+        status: PlayerStatus,         // 1 bit + payload
+        #[byte_align]
+        settings: GameSettings,       // Byte-aligned nested struct
+    }
+
+    #[derive(NetworkSerialize, Default)]
+    #[derive(Debug)]
+    struct GameSettings {
+        difficulty: u8,               // 4 bits
+        is_multiplayer: bool,         // 1 bit
+        #[max_len = 2]
+        modifiers: Vec<u8>,           // 2 bits for length (ceil(log2(3)) = 2)
+    }
+
+    let packet = ComplexPacket {
+        id: 1023,
+        flags: 63,
+        players: vec![
+            PlayerState { health: 15 },
+            PlayerState { health: 10 },
+        ],
+        status: PlayerStatus::Running { speed: 7 },
+        settings: GameSettings {
+            difficulty: 3,
+            is_multiplayer: true,
+            modifiers: vec![1, 2],
+        },
+    };
+    debug!("Starting test_complex_nested_structure with packet: id={}, flags={}, players={:?}, status={:?}, settings={:?}",
+           packet.id, packet.flags, packet.players, packet.status, packet.settings);
+    let mut bit_buffer = BitBuffer::new();
+    packet.bit_serialize(&mut bit_buffer)?;
+    bit_buffer.flush()?;
+    let bit_data = bit_buffer.into_bytes();
+    debug!("Serialized data: {:?}", bit_data);
+    // Expected bits: id (10) + flags (6) + players_len (2) + 2*health (2*4) + status_variant (1) + speed (4) + padding (~7) + difficulty (4) + is_multiplayer (1) + modifiers_len (2) + 2*u8 (2*8)
+    // Total: ~51 bits (~7 bytes)
+    assert!(bit_data.len() <= 7, "Expected ~51 bits (~7 bytes), got {} bytes", bit_data.len());
+    let mut bit_buffer = BitBuffer::from_bytes(bit_data);
+    let deserialized = ComplexPacket::bit_deserialize(&mut bit_buffer)?;
+    assert_eq!(deserialized.id, 1023, "Expected id=1023, got {}", deserialized.id);
+    assert_eq!(deserialized.flags, 63, "Expected flags=63, got {}", deserialized.flags);
+    assert_eq!(deserialized.players.len(), 2, "Expected 2 players, got {}", deserialized.players.len());
+    assert_eq!(deserialized.players[0].health, 15, "Expected player[0].health=15, got {}", deserialized.players[0].health);
+    assert_eq!(deserialized.players[1].health, 10, "Expected player[1].health=10, got {}", deserialized.players[1].health);
+    match deserialized.status {
+        PlayerStatus::Running { speed } => assert_eq!(speed, 7, "Expected status.speed=7, got {}", speed),
+        _ => panic!("Expected Running status, got {:?}", deserialized.status),
+    }
+    assert_eq!(deserialized.settings.difficulty, 3, "Expected settings.difficulty=3, got {}", deserialized.settings.difficulty);
+    assert_eq!(deserialized.settings.is_multiplayer, true, "Expected settings.is_multiplayer=true, got {}", deserialized.settings.is_multiplayer);
+    assert_eq!(deserialized.settings.modifiers, vec![1, 2], "Expected settings.modifiers=[1, 2], got {:?}", deserialized.settings.modifiers);
+    Ok(())
+}
+
 }
