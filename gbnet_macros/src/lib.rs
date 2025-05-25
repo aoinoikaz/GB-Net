@@ -104,6 +104,32 @@ fn is_option_type(ty: &Type) -> bool {
     }
 }
 
+// NEW: Check if type is String
+fn is_string_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        type_path.path.segments.iter().any(|segment| segment.ident == "String")
+    } else {
+        false
+    }
+}
+
+// NEW: Check if type is an array [T; N]
+fn is_array_type(ty: &Type) -> bool {
+    matches!(ty, Type::Array(_))
+}
+
+// NEW: Extract array length if it's an array type
+fn get_array_length(ty: &Type) -> Option<usize> {
+    if let Type::Array(type_array) = ty {
+        if let syn::Expr::Lit(expr_lit) = &type_array.len {
+            if let syn::Lit::Int(lit_int) = &expr_lit.lit {
+                return lit_int.base10_parse::<usize>().ok();
+            }
+        }
+    }
+    None
+}
+
 fn get_default_bits(input: &DeriveInput) -> Vec<(String, usize)> {
     input.attrs.iter()
         .filter(|attr| attr.path().is_ident("default_bits"))
@@ -148,7 +174,7 @@ fn get_field_bit_width(field: &Field, defaults: &[(String, usize)]) -> usize {
             }
         }
         match type_name.as_deref() {
-            Some("u8") | Some("i8") => 8, // Use full 8 bits for u8
+            Some("u8") | Some("i8") => 8,
             Some("u16") | Some("i16") => 16,
             Some("u32") | Some("i32") => 32,
             Some("u64") | Some("i64") => 64,
@@ -304,6 +330,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     let bits = get_field_bit_width(f, &defaults);
                     let max_len = get_max_len(f, input);
                     let value_expr = quote! { self.#name };
+                    
                     let serialize_code = if is_bit {
                         if bits > 0 {
                             quote! {
@@ -334,6 +361,33 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                     item.bit_serialize(writer)?;
                                 }
                             }
+                        } else if is_string_type(&f.ty) {
+                            // NEW: Handle String type with max_len support
+                            let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
+                                (len_bits, quote! { #max_len })
+                            } else {
+                                let default_len_bits = 16usize;
+                                (default_len_bits, quote! { 65535usize })
+                            };
+                            quote! {
+                                let max_len = #max_len_expr;
+                                if self.#name.len() > max_len {
+                                    log::debug!("String length {} exceeds max_len {} for field {:?}", self.#name.len(), max_len, stringify!(#name));
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("String length {} exceeds max_len {}", self.#name.len(), max_len)));
+                                }
+                                writer.write_bits(self.#name.len() as u64, #len_bits)?;
+                                for byte in self.#name.as_bytes() {
+                                    writer.write_bits(*byte as u64, 8)?;
+                                }
+                            }
+                        } else if is_array_type(&f.ty) {
+                            // NEW: Handle fixed arrays - no length prefix needed
+                            quote! {
+                                for item in &self.#name {
+                                    item.bit_serialize(writer)?;
+                                }
+                            }
                         } else if is_option_type(&f.ty) {
                             quote! { self.#name.bit_serialize(writer)?; }
                         } else {
@@ -342,6 +396,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     } else {
                         quote! { self.#name.byte_aligned_serialize(writer)?; }
                     };
+                    
                     if is_byte_align && is_bit {
                         Some(quote! {
                             while writer.bit_pos() % 8 != 0 {
@@ -366,6 +421,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     let bits = get_field_bit_width(&fields.unnamed[i], &defaults);
                     let max_len = get_max_len(&fields.unnamed[i], input);
                     let value_expr = quote! { self.#index };
+                    
                     let serialize_code = if is_bit {
                         if bits > 0 {
                             quote! {
@@ -396,6 +452,33 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                     item.bit_serialize(writer)?;
                                 }
                             }
+                        } else if is_string_type(&fields.unnamed[i].ty) {
+                            // NEW: Handle String type in tuple structs
+                            let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
+                                (len_bits, quote! { #max_len })
+                            } else {
+                                let default_len_bits = 16usize;
+                                (default_len_bits, quote! { 65535usize })
+                            };
+                            quote! {
+                                let max_len = #max_len_expr;
+                                if self.#index.len() > max_len {
+                                    log::debug!("String length {} exceeds max_len {} for field {}", self.#index.len(), max_len, #index);
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("String length {} exceeds max_len {}", self.#index.len(), max_len)));
+                                }
+                                writer.write_bits(self.#index.len() as u64, #len_bits)?;
+                                for byte in self.#index.as_bytes() {
+                                    writer.write_bits(*byte as u64, 8)?;
+                                }
+                            }
+                        } else if is_array_type(&fields.unnamed[i].ty) {
+                            // NEW: Handle fixed arrays in tuple structs
+                            quote! {
+                                for item in &self.#index {
+                                    item.bit_serialize(writer)?;
+                                }
+                            }
                         } else if is_option_type(&fields.unnamed[i].ty) {
                             quote! { self.#index.bit_serialize(writer)?; }
                         } else {
@@ -404,6 +487,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                     } else {
                         quote! { self.#index.byte_aligned_serialize(writer)?; }
                     };
+                    
                     if is_byte_align && is_bit {
                         Some(quote! {
                             while writer.bit_pos() % 8 != 0 {
@@ -452,6 +536,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                         Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
                         _ => None,
                     };
+                    
                     let deserialize_code = if is_bit {
                         if bits > 0 {
                             if type_name.as_deref() == Some("bool") {
@@ -478,6 +563,44 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                     #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
+                        } else if is_string_type(&f.ty) {
+                            // NEW: Handle String deserialization
+                            let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
+                                (len_bits, quote! { #max_len })
+                            } else {
+                                let default_len_bits = 16usize;
+                                (default_len_bits, quote! { 65535usize })
+                            };
+                            quote! {
+                                let len = reader.read_bits(#len_bits)? as usize;
+                                if len > #max_len_expr {
+                                    log::debug!("String length {} exceeds max_len {} for field {:?}", len, #max_len_expr, stringify!(#name));
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("String length {} exceeds max_len {}", len, #max_len_expr)));
+                                }
+                                let mut bytes = Vec::with_capacity(len);
+                                for _ in 0..len {
+                                    bytes.push(reader.read_bits(8)? as u8);
+                                }
+                                let #name = String::from_utf8(bytes).map_err(|e| {
+                                    std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid UTF-8: {}", e))
+                                })?;
+                            }
+                        } else if is_array_type(&f.ty) {
+                            // NEW: Handle fixed array deserialization
+                            if let Some(array_len) = get_array_length(&f.ty) {
+                                quote! {
+                                    let mut #name = Vec::with_capacity(#array_len);
+                                    for _ in 0..#array_len {
+                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                    }
+                                    let #name: [_; #array_len] = #name.try_into().map_err(|_| {
+                                        std::io::Error::new(std::io::ErrorKind::InvalidData, "Array length mismatch")
+                                    })?;
+                                }
+                            } else {
+                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            }
                         } else if is_option_type(&f.ty) {
                             quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
@@ -486,6 +609,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                     } else {
                         quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                     };
+                    
                     if is_byte_align && is_bit {
                         Some(quote! {
                             while reader.bit_pos() % 8 != 0 {
@@ -533,6 +657,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                         Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
                         _ => None,
                     };
+                    
                     let deserialize_code = if is_bit {
                         if bits > 0 {
                             if type_name.as_deref() == Some("bool") {
@@ -559,6 +684,44 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                     #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
+                        } else if is_string_type(&f.ty) {
+                            // NEW: Handle String in tuple structs
+                            let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
+                                let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
+                                (len_bits, quote! { #max_len })
+                            } else {
+                                let default_len_bits = 16usize;
+                                (default_len_bits, quote! { 65535usize })
+                            };
+                            quote! {
+                                let len = reader.read_bits(#len_bits)? as usize;
+                                if len > #max_len_expr {
+                                    log::debug!("String length {} exceeds max_len {} for field {}", len, #max_len_expr, #i);
+                                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("String length {} exceeds max_len {}", len, #max_len_expr)));
+                                }
+                                let mut bytes = Vec::with_capacity(len);
+                                for _ in 0..len {
+                                    bytes.push(reader.read_bits(8)? as u8);
+                                }
+                                let #name = String::from_utf8(bytes).map_err(|e| {
+                                    std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Invalid UTF-8: {}", e))
+                                })?;
+                            }
+                        } else if is_array_type(&f.ty) {
+                            // NEW: Handle fixed arrays in tuple structs
+                            if let Some(array_len) = get_array_length(&f.ty) {
+                                quote! {
+                                    let mut #name = Vec::with_capacity(#array_len);
+                                    for _ in 0..#array_len {
+                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                    }
+                                    let #name: [_; #array_len] = #name.try_into().map_err(|_| {
+                                        std::io::Error::new(std::io::ErrorKind::InvalidData, "Array length mismatch")
+                                    })?;
+                                }
+                            } else {
+                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            }
                         } else if is_option_type(&f.ty) {
                             quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
@@ -567,6 +730,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                     } else {
                         quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                     };
+                    
                     if is_byte_align && is_bit {
                         Some(quote! {
                             while reader.bit_pos() % 8 != 0 {
@@ -590,9 +754,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
     }
 }
 
-// [The rest of your enum functions remain exactly the same - generate_enum_serialize and generate_enum_deserialize]
-// I'm including them here for completeness but they don't need Option-specific changes
-
+// The enum functions remain the same as your original code
 fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
     let defaults = get_default_bits(input);
     let variant_count = data.variants.len();
