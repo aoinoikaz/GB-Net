@@ -10,7 +10,6 @@ pub mod bit_io {
     pub trait BitWrite {
         fn write_bit(&mut self, bit: bool) -> io::Result<()>;
         fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()>;
-        fn flush(&mut self) -> io::Result<()>;
         fn bit_pos(&self) -> usize;
     }
 
@@ -24,6 +23,7 @@ pub mod bit_io {
         buffer: Vec<u8>,
         bit_pos: usize,
         read_pos: usize,
+        unpadded_length: usize, // Tracks bits before padding
     }
 
     impl BitBuffer {
@@ -33,12 +33,18 @@ pub mod bit_io {
                 buffer: Vec::new(),
                 bit_pos: 0,
                 read_pos: 0,
+                unpadded_length: 0,
             }
         }
 
-        pub fn into_bytes(self) -> Vec<u8> {
+        pub fn unpadded_length(&self) -> usize {
+            self.unpadded_length
+        }
+
+        pub fn into_bytes(mut self, pad_to_byte: bool) -> io::Result<Vec<u8>> {
+            self.flush(pad_to_byte)?;
             debug!("Converting BitBuffer to bytes: len={}", self.buffer.len());
-            self.buffer
+            Ok(self.buffer)
         }
 
         pub fn from_bytes(bytes: Vec<u8>) -> Self {
@@ -47,7 +53,187 @@ pub mod bit_io {
                 buffer: bytes,
                 bit_pos: 0,
                 read_pos: 0,
+                unpadded_length: 0,
             }
+        }
+
+        pub fn to_bit_string(&self, bit_length: usize) -> String {
+            debug!("Generating bit string for {} bits", bit_length);
+            let mut bit_string = String::new();
+            let mut bits_written = 0;
+            for (i, &byte) in self.buffer.iter().enumerate() {
+                for j in (0..8).rev() {
+                    if bits_written < bit_length {
+                        let bit = (byte >> j) & 1;
+                        bit_string.push_str(&bit.to_string());
+                        bits_written += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if bits_written < bit_length && i < self.buffer.len() - 1 {
+                    bit_string.push(' ');
+                }
+            }
+            trace!("Bit string: {}", bit_string.trim());
+            bit_string.trim().to_string()
+        }
+
+        fn flush(&mut self, pad_to_byte: bool) -> io::Result<()> {
+            debug!("Flushing BitBuffer at bit_pos: {}, pad_to_byte: {}", self.bit_pos, pad_to_byte);
+            if pad_to_byte {
+                while self.bit_pos % 8 != 0 {
+                    self.write_bit(false)?;
+                }
+            }
+            trace!("Buffer after flush: {:?}", self.buffer);
+            Ok(())
+        }
+
+        // OPTIMIZATION: Fast path for byte-aligned writes
+        fn write_bytes_fast(&mut self, value: u64, bytes: usize) -> io::Result<()> {
+            debug!("Fast byte write: {} bytes from value {}", bytes, value);
+            
+            // Ensure we have enough space
+            self.buffer.reserve(bytes);
+            
+            // Write bytes from most significant to least significant
+            for i in 0..bytes {
+                let byte = ((value >> (8 * (bytes - 1 - i))) & 0xFF) as u8;
+                self.buffer.push(byte);
+                trace!("Wrote byte {}: {}", i, byte);
+            }
+            
+            self.bit_pos += bytes * 8;
+            self.unpadded_length += bytes * 8;
+            
+            trace!("Fast write complete: bit_pos={}, buffer_len={}", self.bit_pos, self.buffer.len());
+            Ok(())
+        }
+
+        // OPTIMIZATION: Write multiple bits per operation
+        fn write_bits_optimized(&mut self, value: u64, bits: usize) -> io::Result<()> {
+            debug!("Optimized bit write: {} bits, value {}", bits, value);
+            
+            let mut remaining_bits = bits;
+            let mut val = value;
+            
+            while remaining_bits > 0 {
+                let byte_pos = self.bit_pos / 8;
+                let bit_offset = self.bit_pos % 8;
+                let bits_available_in_byte = 8 - bit_offset;
+                let bits_to_write = remaining_bits.min(bits_available_in_byte);
+                
+                // Ensure buffer has space
+                while byte_pos >= self.buffer.len() {
+                    self.buffer.push(0);
+                }
+                
+                // Extract the bits we want to write (from the most significant bits of remaining)
+                let shift = if remaining_bits >= bits_to_write { remaining_bits - bits_to_write } else { 0 };
+                let bits_to_write_val = if shift < 64 {
+                    (val >> shift) & ((1u64 << bits_to_write) - 1)
+                } else {
+                    0
+                };
+                
+                // Write these bits to the current byte
+                let byte_shift = bits_available_in_byte - bits_to_write;
+                self.buffer[byte_pos] |= (bits_to_write_val as u8) << byte_shift;
+                
+                trace!(
+                    "Wrote {} bits (value {}) to byte {} at offset {}", 
+                    bits_to_write, bits_to_write_val, byte_pos, bit_offset
+                );
+                
+                // Update counters
+                self.bit_pos += bits_to_write;
+                remaining_bits -= bits_to_write;
+                
+                // Mask off the bits we just wrote
+                val &= if remaining_bits > 0 && remaining_bits < 64 {
+                    (1u64 << remaining_bits) - 1
+                } else if remaining_bits == 0 {
+                    0
+                } else {
+                    u64::MAX
+                };
+            }
+            
+            self.unpadded_length += bits;
+            trace!("Optimized write complete: bit_pos={}", self.bit_pos);
+            Ok(())
+        }
+
+        // OPTIMIZATION: Fast path for byte-aligned reads
+        fn read_bytes_fast(&mut self, bytes: usize) -> io::Result<u64> {
+            debug!("Fast byte read: {} bytes", bytes);
+            
+            let start_byte = self.read_pos / 8;
+            let end_byte = start_byte + bytes;
+            
+            if end_byte > self.buffer.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Not enough bytes to read"
+                ));
+            }
+            
+            let mut value = 0u64;
+            for i in 0..bytes {
+                let byte = self.buffer[start_byte + i];
+                value |= (byte as u64) << (8 * (bytes - 1 - i));
+                trace!("Read byte {}: {}", i, byte);
+            }
+            
+            self.read_pos += bytes * 8;
+            trace!("Fast read complete: read_pos={}, value={}", self.read_pos, value);
+            Ok(value)
+        }
+
+        // OPTIMIZATION: Read multiple bits per operation
+        fn read_bits_optimized(&mut self, bits: usize) -> io::Result<u64> {
+            debug!("Optimized bit read: {} bits", bits);
+            
+            let mut remaining_bits = bits;
+            let mut value = 0u64;
+            
+            while remaining_bits > 0 {
+                let byte_pos = self.read_pos / 8;
+                let bit_offset = self.read_pos % 8;
+                let bits_available_in_byte = 8 - bit_offset;
+                let bits_to_read = remaining_bits.min(bits_available_in_byte);
+                
+                if byte_pos >= self.buffer.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Buffer underflow during optimized read"
+                    ));
+                }
+                
+                // Extract the bits we want from the current byte
+                let byte_shift = bits_available_in_byte - bits_to_read;
+                let mask = if bits_to_read >= 8 { 0xFF } else { (1u8 << bits_to_read) - 1 };
+                let bits_value = (self.buffer[byte_pos] >> byte_shift) & mask;
+                
+                // Add these bits to our result (they go in the most significant position of remaining bits)
+                let result_shift = remaining_bits - bits_to_read;
+                if result_shift < 64 {  // Prevent shift overflow
+                    value |= (bits_value as u64) << result_shift;
+                }
+                
+                trace!(
+                    "Read {} bits (value {}) from byte {} at offset {}",
+                    bits_to_read, bits_value, byte_pos, bit_offset
+                );
+                
+                // Update counters
+                self.read_pos += bits_to_read;
+                remaining_bits -= bits_to_read;
+            }
+            
+            trace!("Optimized read complete: read_pos={}, value={}", self.read_pos, value);
+            Ok(value)
         }
     }
 
@@ -75,6 +261,7 @@ pub mod bit_io {
             }
 
             self.bit_pos += 1;
+            self.unpadded_length += 1;
             trace!("Buffer after write: {:?}", self.buffer);
             Ok(())
         }
@@ -82,29 +269,22 @@ pub mod bit_io {
         fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
             if bits > 64 {
                 debug!("Error: Attempted to write {} bits, exceeds 64", bits);
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Bits exceed 64",
-                ));
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Bits exceed 64"));
             }
-            debug!(
-                "Writing {} bits: {} at bit_pos: {}",
-                bits, value, self.bit_pos
-            );
-            for i in (0..bits).rev() {
-                let bit = ((value >> i) & 1) != 0;
-                self.write_bit(bit)?;
+            if bits == 0 {
+                return Ok(());
             }
-            Ok(())
-        }
 
-        fn flush(&mut self) -> io::Result<()> {
-            debug!("Flushing BitBuffer at bit_pos: {}", self.bit_pos);
-            while self.bit_pos % 8 != 0 {
-                self.write_bit(false)?;
+            debug!("Writing {} bits: {} at bit_pos: {}", bits, value, self.bit_pos);
+            let val = value & ((1u64 << bits) - 1); // Mask to ensure only `bits` are used
+
+            // FAST PATH: Check if we can write whole bytes efficiently
+            if self.bit_pos % 8 == 0 && bits % 8 == 0 {
+                return self.write_bytes_fast(val, bits / 8);
             }
-            trace!("Buffer after flush: {:?}", self.buffer);
-            Ok(())
+
+            // OPTIMIZED PATH: Write multiple bits per operation when possible
+            self.write_bits_optimized(val, bits)
         }
 
         fn bit_pos(&self) -> usize {
@@ -145,100 +325,24 @@ pub mod bit_io {
                     "Bits exceed 64",
                 ));
             }
-            debug!("Reading {} bits at read_pos: {}", bits, self.read_pos);
-            let mut value = 0;
-            for _ in 0..bits {
-                value = (value << 1) | (self.read_bit()? as u64);
+            if bits == 0 {
+                return Ok(0);
             }
-            trace!("Read bits value: {}", value);
-            Ok(value)
+
+            debug!("Reading {} bits at read_pos: {}", bits, self.read_pos);
+
+            // FAST PATH: Check if we can read whole bytes efficiently
+            if self.read_pos % 8 == 0 && bits % 8 == 0 {
+                return self.read_bytes_fast(bits / 8);
+            }
+
+            // OPTIMIZED PATH: Read multiple bits per operation when possible
+            self.read_bits_optimized(bits)
         }
 
         fn bit_pos(&self) -> usize {
             self.read_pos
         }
-    }
-
-    // Helper struct for generating bit patterns
-    pub struct BitPatternBuilder {
-        bits: String,
-        bit_pos: usize,
-    }
-
-    impl BitPatternBuilder {
-        pub fn new() -> Self {
-            BitPatternBuilder {
-                bits: String::new(),
-                bit_pos: 0,
-            }
-        }
-
-        pub fn into_string(self) -> String {
-            self.bits
-        }
-    }
-
-    impl BitWrite for BitPatternBuilder {
-        fn write_bit(&mut self, bit: bool) -> io::Result<()> {
-            self.bits.push(if bit { '1' } else { '0' });
-            self.bit_pos += 1;
-            Ok(())
-        }
-
-        fn write_bits(&mut self, value: u64, bits: usize) -> io::Result<()> {
-            if bits > 64 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Bits exceed 64",
-                ));
-            }
-            for i in (0..bits).rev() {
-                let bit = ((value >> i) & 1) != 0;
-                self.write_bit(bit)?;
-            }
-            Ok(())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            while self.bit_pos % 8 != 0 {
-                self.write_bit(false)?;
-            }
-            Ok(())
-        }
-
-        fn bit_pos(&self) -> usize {
-            self.bit_pos
-        }
-    }
-
-    /// Generates the expected bit pattern for a type implementing `BitSerialize`.
-    /// Returns the bit string (e.g., "11110000") and the total bit length.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use gbnet::serialize::{BitSerialize, bit_io::generate_bit_pattern};
-    /// use gbnet_macros::NetworkSerialize;
-    ///
-    /// #[derive(NetworkSerialize)]
-    /// struct TestPacket {
-    ///     #[bits = 4]
-    ///     value: u8,
-    /// }
-    ///
-    /// let packet = TestPacket { value: 15 };
-    /// let (bit_pattern, bit_length) = generate_bit_pattern(&packet).unwrap();
-    /// assert_eq!(bit_pattern, "11110000"); // 4 bits for value=15 + 4 bits padding
-    /// assert_eq!(bit_length, 8); // After flush to byte boundary
-    /// ```
-    pub fn generate_bit_pattern<T: super::BitSerialize>(
-        value: &T,
-    ) -> io::Result<(String, usize)> {
-        let mut builder = BitPatternBuilder::new();
-        value.bit_serialize(&mut builder)?;
-        builder.flush()?;
-        let bit_length = builder.bit_pos();
-        Ok((builder.into_string(), bit_length))
     }
 }
 
@@ -365,7 +469,7 @@ impl BitSerialize for bool {
 }
 
 impl BitDeserialize for bool {
-    fn bit_deserialize<R: bit_io::BitRead>(reader: &mut R) -> std::io::Result<Self> {
+    fn bit_deserialize<R: bit_io::BitRead>(reader: &mut R) -> io::Result<Self> {
         debug!("Deserializing bool");
         let value = reader.read_bit()?;
         debug!("Deserialized bool: {}", value);
@@ -377,7 +481,7 @@ impl ByteAlignedSerialize for bool {
     fn byte_aligned_serialize<W: Write + WriteBytesExt>(
         &self,
         writer: &mut W,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         debug!("Byte-aligned serializing bool: {}", *self);
         writer.write_u8(if *self { 1 } else { 0 })?;
         Ok(())
@@ -387,7 +491,7 @@ impl ByteAlignedSerialize for bool {
 impl ByteAlignedDeserialize for bool {
     fn byte_aligned_deserialize<R: Read + ReadBytesExt>(
         reader: &mut R,
-    ) -> std::io::Result<Self> {
+    ) -> io::Result<Self> {
         debug!("Byte-aligned deserializing bool");
         let value = reader.read_u8()?;
         debug!("Deserialized bool: {}", value != 0);
@@ -397,7 +501,7 @@ impl ByteAlignedDeserialize for bool {
 
 // Collection Implementations
 impl<T: BitSerialize> BitSerialize for Vec<T> {
-    fn bit_serialize<W: bit_io::BitWrite>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn bit_serialize<W: bit_io::BitWrite>(&self, writer: &mut W) -> io::Result<()> {
         const DEFAULT_MAX_LEN: usize = 65535; // 16 bits
         let max_len = DEFAULT_MAX_LEN;
         let len_bits = (max_len as f64).log2().ceil() as usize;
@@ -415,7 +519,7 @@ impl<T: BitSerialize> BitSerialize for Vec<T> {
             );
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Vector length exceeds max_len",
+                format!("Vector length {} exceeds max_len {}", self.len(), max_len),
             ));
         }
         writer.write_bits(self.len() as u64, len_bits)?;
@@ -446,7 +550,7 @@ impl<T: BitDeserialize> BitDeserialize for Vec<T> {
             );
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Vector length exceeds max_len",
+                format!("Vector length {} exceeds max_len {}", len, max_len),
             ));
         }
         let mut vec = Vec::with_capacity(len);
@@ -466,7 +570,7 @@ impl<T: ByteAlignedSerialize> ByteAlignedSerialize for Vec<T> {
     fn byte_aligned_serialize<W: Write + WriteBytesExt>(
         &self,
         writer: &mut W,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         debug!("Byte-aligned serializing Vec<T> with len: {}", self.len());
         writer.write_u32::<LittleEndian>(self.len() as u32)?;
         for (i, item) in self.iter().enumerate() {
@@ -480,7 +584,7 @@ impl<T: ByteAlignedSerialize> ByteAlignedSerialize for Vec<T> {
 impl<T: ByteAlignedDeserialize> ByteAlignedDeserialize for Vec<T> {
     fn byte_aligned_deserialize<R: Read + ReadBytesExt>(
         reader: &mut R,
-    ) -> std::io::Result<Self> {
+    ) -> io::Result<Self> {
         debug!("Byte-aligned deserializing Vec<T>");
         let len = reader.read_u32::<LittleEndian>()? as usize;
         debug!("Deserialized Vec<T> length: {}", len);

@@ -488,7 +488,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
             });
             quote! {
                 #(#deserialize_fields)*
-                Ok(Self { #(#field_names,)* #(#field_defaults),* })
+                Ok(Self { #(#field_names,)* #(#field_defaults,)* })
             }
         }
         Fields::Unnamed(fields) => {
@@ -567,7 +567,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
             });
             quote! {
                 #(#deserialize_fields)*
-                Ok(Self(#(#field_names,)* #(#field_defaults),*))
+                Ok(Self(#(#field_names,)* #(#field_defaults,)*))
             }
         }
         Fields::Unit => quote! { Ok(Self) },
@@ -607,10 +607,6 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         let is_byte_align = is_byte_aligned(f);
                         let bits = get_field_bit_width(f, &defaults);
                         let max_len = get_max_len(f, input);
-                        let type_name = match &f.ty {
-                            Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
-                            _ => None,
-                        };
                         let serialize_code = if is_bit {
                             if bits > 0 {
                                 quote! {
@@ -646,11 +642,15 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                             }
                         } else {
                             if bits > 0 {
+                                let type_name = match &f.ty {
+                                    Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
+                                    _ => None,
+                                };
                                 match type_name.as_deref() {
                                     Some("u8") | Some("i8") => quote! { writer.write_u8(*#name)?; },
-                                    Some("u16") | Some("i16") => quote! { writer.write_u16::<LittleEndian>(*#name)?; },
-                                    Some("u32") | Some("i32") => quote! { writer.write_u32::<LittleEndian>(*#name)?; },
-                                    Some("u64") | Some("i64") => quote! { writer.write_u64::<LittleEndian>(*#name)?; },
+                                    Some("u16") | Some("i16") => quote! { writer.write_u16::<byteorder::LittleEndian>(*#name as u16)?; },
+                                    Some("u32") | Some("i32") => quote! { writer.write_u32::<byteorder::LittleEndian>(*#name as u32)?; },
+                                    Some("u64") | Some("i64") => quote! { writer.write_u64::<byteorder::LittleEndian>(*#name as u64)?; },
                                     Some("bool") => quote! { writer.write_u8(if *#name { 1 } else { 0 })?; },
                                     _ => quote! { #name.byte_aligned_serialize(writer)?; },
                                 }
@@ -677,7 +677,7 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         #serialize_code
                         #(#serialize_fields)*
                         Ok(())
-                    }
+                    },
                 }
             }
             Fields::Unnamed(fields) => {
@@ -690,10 +690,6 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         let is_byte_align = is_byte_aligned(f);
                         let bits = get_field_bit_width(f, &defaults);
                         let max_len = get_max_len(f, input);
-                        let type_name = match &f.ty {
-                            Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
-                            _ => None,
-                        };
                         let serialize_code = if is_bit {
                             if bits > 0 {
                                 quote! {
@@ -729,11 +725,15 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                             }
                         } else {
                             if bits > 0 {
+                                let type_name = match &f.ty {
+                                    Type::Path(type_path) => type_path.path.get_ident().map(|i| i.to_string()),
+                                    _ => None,
+                                };
                                 match type_name.as_deref() {
                                     Some("u8") | Some("i8") => quote! { writer.write_u8(*#name)?; },
-                                    Some("u16") | Some("i16") => quote! { writer.write_u16::<LittleEndian>(*#name)?; },
-                                    Some("u32") | Some("i32") => quote! { writer.write_u32::<LittleEndian>(*#name)?; },
-                                    Some("u64") | Some("i64") => quote! { writer.write_u64::<LittleEndian>(*#name)?; },
+                                    Some("u16") | Some("i16") => quote! { writer.write_u16::<byteorder::LittleEndian>(*#name as u16)?; },
+                                    Some("u32") | Some("i32") => quote! { writer.write_u32::<byteorder::LittleEndian>(*#name as u32)?; },
+                                    Some("u64") | Some("i64") => quote! { writer.write_u64::<byteorder::LittleEndian>(*#name as u64)?; },
                                     Some("bool") => quote! { writer.write_u8(if *#name { 1 } else { 0 })?; },
                                     _ => quote! { #name.byte_aligned_serialize(writer)?; },
                                 }
@@ -760,19 +760,23 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
                         #serialize_code
                         #(#serialize_fields)*
                         Ok(())
-                    }
+                    },
                 }
             }
             Fields::Unit => quote! {
                 Self::#variant_name => {
                     #serialize_code
                     Ok(())
-                }
+                },
             },
         }
     });
 
-    quote! { match self { #(#variants),* } }
+    quote! { 
+        match self { 
+            #(#variants)* 
+        } 
+    }
 }
 
 fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
@@ -853,9 +857,9 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                             if bits > 0 {
                                 match type_name.as_deref() {
                                     Some("u8") | Some("i8") => quote! { let #name = reader.read_u8()?; },
-                                    Some("u16") | Some("i16") => quote! { let #name = reader.read_u16::<LittleEndian>()?; },
-                                    Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<LittleEndian>()?; },
-                                    Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<LittleEndian>()?; },
+                                    Some("u16") | Some("i16") => quote! { let #name = reader.read_u16::<byteorder::LittleEndian>()? as _; },
+                                    Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<byteorder::LittleEndian>()? as _; },
+                                    Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<byteorder::LittleEndian>()? as _; },
                                     Some("bool") => quote! { let #name = reader.read_u8()? != 0; },
                                     _ => quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
                                 }
@@ -880,8 +884,8 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                 quote! {
                     #variant_index => {
                         #(#deserialize_fields)*
-                        Ok(Self::#variant_name { #(#field_names,)* #(#field_defaults),* })
-                    }
+                        Ok(Self::#variant_name { #(#field_names,)* #(#field_defaults,)* })
+                    },
                 }
             }
             Fields::Unnamed(fields) => {
@@ -945,9 +949,9 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                             if bits > 0 {
                                 match type_name.as_deref() {
                                     Some("u8") | Some("i8") => quote! { let #name = reader.read_u8()?; },
-                                    Some("u16") | Some("i16") => quote! { let #name = reader.read_u16::<LittleEndian>()?; },
-                                    Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<LittleEndian>()?; },
-                                    Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<LittleEndian>()?; },
+                                    Some("u16") | Some("i16") => quote! { let #name = reader.read_u16::<byteorder::LittleEndian>()? as _; },
+                                    Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<byteorder::LittleEndian>()? as _; },
+                                    Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<byteorder::LittleEndian>()? as _; },
                                     Some("bool") => quote! { let #name = reader.read_u8()? != 0; },
                                     _ => quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
                                 }
@@ -972,13 +976,13 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                 quote! {
                     #variant_index => {
                         #(#deserialize_fields)*
-                        Ok(Self::#variant_name(#(#field_names,)* #(#field_defaults),*))
-                    }
+                        Ok(Self::#variant_name(#(#field_names,)* #(#field_defaults,)*))
+                    },
                 }
             }
             Fields::Unit => quote! {
-                #variant_index => Ok(Self::#variant_name)
-            },
+                #variant_index => Ok(Self::#variant_name),
+            }
         }
     });
 
@@ -986,7 +990,7 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
         quote! {
             let variant_index = reader.read_bits(#bits)?;
             match variant_index {
-                #(#variants),*
+                #(#variants)*
                 _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unknown variant index")),
             }
         }
@@ -994,7 +998,7 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
         quote! {
             let variant_index = reader.read_u8()? as u64;
             match variant_index {
-                #(#variants),*
+                #(#variants)*
                 _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Unknown variant index")),
             }
         }
