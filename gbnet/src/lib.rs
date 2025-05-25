@@ -24,15 +24,6 @@ pub struct NetworkMessage {
     game_state: GameState,            // Aligned to byte boundary, + GameState bits
 }
 
-#[derive(NetworkSerialize, Default, Debug)]
-pub struct PlayerInfo {
-    #[bits = 6]
-    health: u8,                       // 6 bits
-    #[bits = 4]
-    energy: u8,                       // 4 bits
-    is_active: bool,                  // 1 bit
-}
-
 #[derive(NetworkSerialize)]
 pub enum MessageType {
     StatusUpdate,                     // 0 (2 bits)
@@ -48,6 +39,17 @@ pub struct GameState {
     #[bits = 8]
     score: u8,                        // 8 bits
     is_paused: bool,                  // 1 bit
+}
+
+#[derive(NetworkSerialize, Default, Debug)]
+pub struct PlayerInfo {
+    #[bits = 6]
+    health: u8,                       
+    #[bits = 4]
+    energy: u8,                       
+    is_active: bool,                  
+    // NEW: Add this optional field
+    nickname: Option<u8>,             // 1 bit discriminant + conditional 8 bits
 }
 
 fn init_logger() {
@@ -72,11 +74,13 @@ mod tests {
                     health: 50,
                     energy: 10,
                     is_active: true,
+                    nickname: Some(42)
                 },
                 PlayerInfo {
                     health: 30,
                     energy: 5,
                     is_active: false,
+                    nickname: None
                 },
             ],
             message_type: MessageType::Command { code: 42 },
@@ -133,11 +137,13 @@ mod benchmarks {
                     health: 50,
                     energy: 10,
                     is_active: true,
+                    nickname: Some(42)
                 },
                 PlayerInfo {
                     health: 30,
                     energy: 5,
                     is_active: false,
+                    nickname: None
                 },
             ],
             message_type: MessageType::Command { code: 42 },

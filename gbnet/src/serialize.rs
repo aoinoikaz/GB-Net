@@ -595,4 +595,64 @@ impl<T: ByteAlignedDeserialize> ByteAlignedDeserialize for Vec<T> {
         }
         Ok(vec)
     }
+
 }
+
+
+// Option<T> implementations - add these after Vec implementations
+impl<T: BitSerialize> BitSerialize for Option<T> {
+    fn bit_serialize<W: bit_io::BitWrite>(&self, writer: &mut W) -> std::io::Result<()> {
+        debug!("Serializing Option<T>");
+        match self {
+            Some(value) => {
+                writer.write_bit(true)?;  // 1 bit for Some
+                value.bit_serialize(writer)?;
+            }
+            None => {
+                writer.write_bit(false)?; // 1 bit for None
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: BitDeserialize> BitDeserialize for Option<T> {
+    fn bit_deserialize<R: bit_io::BitRead>(reader: &mut R) -> std::io::Result<Self> {
+        debug!("Deserializing Option<T>");
+        let has_value = reader.read_bit()?;
+        if has_value {
+            Ok(Some(T::bit_deserialize(reader)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+impl<T: ByteAlignedSerialize> ByteAlignedSerialize for Option<T> {
+    fn byte_aligned_serialize<W: Write + WriteBytesExt>(&self, writer: &mut W) -> std::io::Result<()> {
+        debug!("Byte-aligned serializing Option<T>");
+        match self {
+            Some(value) => {
+                writer.write_u8(1)?;
+                value.byte_aligned_serialize(writer)?;
+            }
+            None => {
+                writer.write_u8(0)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: ByteAlignedDeserialize> ByteAlignedDeserialize for Option<T> {
+    fn byte_aligned_deserialize<R: Read + ReadBytesExt>(reader: &mut R) -> std::io::Result<Self> {
+        debug!("Byte-aligned deserializing Option<T>");
+        let has_value = reader.read_u8()? != 0;
+        if has_value {
+            Ok(Some(T::byte_aligned_deserialize(reader)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+

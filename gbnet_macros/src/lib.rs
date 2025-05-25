@@ -96,6 +96,14 @@ fn is_vec_type(ty: &Type) -> bool {
     }
 }
 
+fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        type_path.path.segments.iter().any(|segment| segment.ident == "Option")
+    } else {
+        false
+    }
+}
+
 fn get_default_bits(input: &DeriveInput) -> Vec<(String, usize)> {
     input.attrs.iter()
         .filter(|attr| attr.path().is_ident("default_bits"))
@@ -326,6 +334,8 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                     item.bit_serialize(writer)?;
                                 }
                             }
+                        } else if is_option_type(&f.ty) {
+                            quote! { self.#name.bit_serialize(writer)?; }
                         } else {
                             quote! { self.#name.bit_serialize(writer)?; }
                         }
@@ -386,6 +396,8 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                     item.bit_serialize(writer)?;
                                 }
                             }
+                        } else if is_option_type(&fields.unnamed[i].ty) {
+                            quote! { self.#index.bit_serialize(writer)?; }
                         } else {
                             quote! { self.#index.bit_serialize(writer)?; }
                         }
@@ -466,6 +478,8 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                     #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
+                        } else if is_option_type(&f.ty) {
+                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
                             quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         }
@@ -545,6 +559,8 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                     #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
+                        } else if is_option_type(&f.ty) {
+                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
                             quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         }
@@ -573,6 +589,9 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
         Fields::Unit => quote! { Ok(Self) },
     }
 }
+
+// [The rest of your enum functions remain exactly the same - generate_enum_serialize and generate_enum_deserialize]
+// I'm including them here for completeness but they don't need Option-specific changes
 
 fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
     let defaults = get_default_bits(input);
