@@ -46,7 +46,7 @@ fn get_max_len(field: &Field, input: &DeriveInput) -> Option<usize> {
                     ..
                 }) => {
                     let result = lit.base10_parse::<usize>().ok();
-                    eprintln!("Field max_len for {:?}: {:?}", field.ident, result);
+                    //eprintln!("Field max_len for {:?}: {:?}", field.ident, result);
                     result
                 }
                 _ => {
@@ -69,11 +69,11 @@ fn get_max_len(field: &Field, input: &DeriveInput) -> Option<usize> {
                         ..
                     }) => {
                         let result = lit.base10_parse::<usize>().ok();
-                        eprintln!("Default max_len for input: {:?}", result);
+                        //eprintln!("Default max_len for input: {:?}", result);
                         result
                     }
                     _ => {
-                        eprintln!("Default max_len parse failed");
+                        //eprintln!("Default max_len parse failed");
                         None
                     }
                 }

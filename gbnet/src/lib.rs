@@ -49,7 +49,7 @@ pub struct PlayerInfo {
     nickname: Option<u8>,             // 1 bit discriminant + conditional 8 bits
 }
 
-// NEW: Test struct with String and array fields for macro testing
+// Test struct with String and array fields for macro testing
 #[derive(NetworkSerialize, Debug, PartialEq)]
 #[default_max_len = 32]
 pub struct ExtendedMessage {
@@ -67,7 +67,7 @@ mod tests {
     #[allow(dead_code)]
     fn init_logger() {
         let _ = env_logger::builder()
-            .filter_level(log::LevelFilter::Trace)
+            .filter_level(log::LevelFilter::Debug) // Reduced to Debug level
             .try_init();
     }
 
@@ -184,6 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn test_float_serialization() -> std::io::Result<()> {
+        init_logger();
+        // Test individual f32 values first
+        let test_float = 10.5f32;
+        let mut bit_buffer = BitBuffer::new();
+        test_float.bit_serialize(&mut bit_buffer)?;
+        
+        let bit_data = bit_buffer.into_bytes(false)?;
+        let mut bit_buffer = BitBuffer::from_bytes(bit_data);
+        let deserialized = f32::bit_deserialize(&mut bit_buffer)?;
+        
+        assert_eq!(deserialized, test_float);
+        println!("Float serialization test passed: {}", deserialized);
+        Ok(())
+    }
+
+    #[test]
     fn test_extended_message_with_new_types() -> std::io::Result<()> {
         init_logger();
         let message = ExtendedMessage {
@@ -203,7 +220,7 @@ mod tests {
         let deserialized = ExtendedMessage::bit_deserialize(&mut bit_buffer)?;
         
         assert_eq!(deserialized.player_name, message.player_name);
-        assert_eq!(deserialized.coordinates, message.coordinates);
+        assert_eq!(deserialized.coordinates, message.coordinates); // This should work now with f32 bit serialization fix
         assert_eq!(deserialized.tags, message.tags);
         assert_eq!(deserialized.metadata, message.metadata);
         
