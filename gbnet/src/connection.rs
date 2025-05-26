@@ -182,7 +182,16 @@ impl Connection {
                 }
                 
                 // Update reliability system
-                self.reliability.update(now);
+                let packets_to_retry = self.reliability.update(now);
+                for (sequence, data) in packets_to_retry {
+                    // Recreate the packet for retransmission
+                    let mut header = self.create_header();
+                    header.sequence = sequence;
+                    // For now, assume it's a payload packet on channel 0
+                    let packet = Packet::new(header, PacketType::Payload { channel: 0, is_fragment: false })
+                        .with_payload(data);
+                    self.send_queue.push_back(packet);
+                }
             }
             _ => {}
         }
@@ -264,7 +273,7 @@ impl Connection {
             // Track reliable packets
             if let PacketType::Payload { channel, .. } = packet.packet_type {
                 if self.channels[channel as usize].is_reliable() {
-                    self.reliability.on_packet_sent(packet.header.sequence, Instant::now());
+                    self.reliability.on_packet_sent(packet.header.sequence, Instant::now(), data.clone());
                 }
             }
         }
@@ -389,5 +398,15 @@ impl Connection {
     /// Returns the connection statistics.
     pub fn stats(&self) -> &NetworkStats {
         &self.stats
+    }
+    
+    /// Gets the local address of this connection.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+    
+    /// Gets the remote address of this connection.
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
     }
 }

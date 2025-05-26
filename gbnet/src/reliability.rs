@@ -52,16 +52,23 @@ impl ReliableEndpoint {
     }
     
     /// Records a packet as sent for reliability tracking
-    pub fn on_packet_sent(&mut self, sequence: u16, send_time: Instant) {
+    pub fn on_packet_sent(&mut self, sequence: u16, send_time: Instant, data: Vec<u8>) {
         self.sent_packets.insert(sequence, SentPacketData {
             send_time,
             retry_count: 0,
-            data: Vec::new(), // In a real implementation, you'd store the packet data
+            data,
         });
     }
     
     /// Processes an incoming packet and updates ack information
     pub fn on_packet_received(&mut self, sequence: u16, _receive_time: Instant) {
+        // Check if sequence is too far from what we expect (max_sequence_distance)
+        let distance = sequence_diff(sequence, self.remote_sequence).abs() as u16;
+        if distance > self.max_sequence_distance {
+            // Sequence too far out of range, ignore it
+            return;
+        }
+        
         // Check if this is a new packet (not a duplicate)
         if !self.received_packets.exists(sequence) {
             self.received_packets.insert(sequence, true);
@@ -101,7 +108,7 @@ impl ReliableEndpoint {
     }
     
     /// Updates the reliability system, retrying timed-out packets
-    pub fn update(&mut self, current_time: Instant) -> Vec<u16> {
+    pub fn update(&mut self, current_time: Instant) -> Vec<(u16, Vec<u8>)> {
         let mut packets_to_resend = Vec::new();
         let mut packets_to_remove = Vec::new();
         
@@ -115,7 +122,7 @@ impl ReliableEndpoint {
                     // Retry the packet
                     packet_data.retry_count += 1;
                     packet_data.send_time = current_time;
-                    packets_to_resend.push(sequence);
+                    packets_to_resend.push((sequence, packet_data.data.clone()));
                 }
             }
         }
@@ -249,8 +256,8 @@ mod tests {
         // Send some packets
         let seq1 = endpoint.next_sequence();
         let seq2 = endpoint.next_sequence();
-        endpoint.on_packet_sent(seq1, now);
-        endpoint.on_packet_sent(seq2, now);
+        endpoint.on_packet_sent(seq1, now, vec![1, 2, 3]);
+        endpoint.on_packet_sent(seq2, now, vec![4, 5, 6]);
         
         // Simulate receiving acks
         endpoint.process_acks(seq1, 0);
