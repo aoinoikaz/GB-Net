@@ -9,7 +9,8 @@ use crate::{
     packet::{Packet, PacketHeader, PacketType, disconnect_reason, sequence_greater_than},
     socket::{UdpSocket, SocketError},
     reliability::ReliableEndpoint,
-    channel::{Channel, ChannelConfig},
+    channel::{Channel, ChannelError},
+    config::ChannelConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,11 +31,18 @@ pub enum ConnectionError {
     ProtocolMismatch,
     InvalidPacket,
     SocketError(SocketError),
+    ChannelError(ChannelError),
 }
 
 impl From<SocketError> for ConnectionError {
     fn from(err: SocketError) -> Self {
         ConnectionError::SocketError(err)
+    }
+}
+
+impl From<ChannelError> for ConnectionError {
+    fn from(err: ChannelError) -> Self {
+        ConnectionError::ChannelError(err)
     }
 }
 
@@ -76,8 +84,9 @@ impl Connection {
     /// Creates a new connection with the given configuration and addresses.
     pub fn new(config: NetworkConfig, local_addr: SocketAddr, remote_addr: SocketAddr) -> Self {
         let mut channels = Vec::with_capacity(config.max_channels);
+        let channel_config = config.default_channel_config;
         for i in 0..config.max_channels {
-            channels.push(Channel::new(i as u8, config.default_channel_config));
+            channels.push(Channel::new(i as u8, channel_config));
         }
         
         Self {
@@ -341,7 +350,7 @@ impl Connection {
                             self.channels[channel as usize].on_packet_received(packet.payload);
                         }
                     }
-                    PacketType::Disconnect { reason } => {
+                    PacketType::Disconnect { reason: _ } => {
                         self.state = ConnectionState::Disconnected;
                         self.reset_connection();
                     }

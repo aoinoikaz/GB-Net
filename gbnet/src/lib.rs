@@ -14,8 +14,8 @@ pub use socket::{UdpSocket, SocketError};
 pub use packet::{Packet, PacketHeader, PacketType};
 pub use connection::{Connection, ConnectionState, ConnectionError};
 pub use reliability::{ReliableEndpoint, SequenceBuffer};
-pub use channel::{Channel, ChannelConfig, Reliability, Ordering};
-pub use config::NetworkConfig;
+pub use channel::{Channel, ChannelError};
+pub use config::{NetworkConfig, ChannelConfig, Reliability, Ordering};
 
 // Re-export serialization traits
 pub use serialize::{BitSerialize, BitDeserialize, ByteAlignedSerialize, ByteAlignedDeserialize};

@@ -192,9 +192,6 @@ pub struct ChannelStats {
     pub receive_buffer_size: usize,
 }
 
-// Re-export types from config for convenience
-pub use crate::config::{ChannelConfig, Reliability, Ordering};
-
 #[cfg(test)]
 mod tests {
     use super::*;

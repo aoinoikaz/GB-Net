@@ -78,8 +78,8 @@ impl Packet {
         // Serialize packet type
         self.packet_type.bit_serialize(&mut buffer)?;
         
-        // Pad to byte boundary before payload
-        while buffer.bit_pos() % 8 != 0 {
+        // Pad to byte boundary before payload using BitWrite trait
+        while BitWrite::bit_pos(&buffer) % 8 != 0 {
             buffer.write_bit(false)?;
         }
         
@@ -107,13 +107,13 @@ impl Packet {
         // Deserialize packet type
         let packet_type = PacketType::bit_deserialize(&mut buffer)?;
         
-        // Align to byte boundary
-        while buffer.bit_pos() % 8 != 0 {
+        // Align to byte boundary using BitRead trait
+        while BitRead::bit_pos(&buffer) % 8 != 0 {
             buffer.read_bit()?;
         }
         
         // Calculate where payload starts
-        let header_size = buffer.bit_pos() / 8;
+        let header_size = BitRead::bit_pos(&buffer) / 8;
         let payload = if header_size < data.len() {
             data[header_size..].to_vec()
         } else {

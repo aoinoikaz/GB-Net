@@ -61,7 +61,7 @@ impl ReliableEndpoint {
     }
     
     /// Processes an incoming packet and updates ack information
-    pub fn on_packet_received(&mut self, sequence: u16, receive_time: Instant) {
+    pub fn on_packet_received(&mut self, sequence: u16, _receive_time: Instant) {
         // Check if this is a new packet (not a duplicate)
         if !self.received_packets.exists(sequence) {
             self.received_packets.insert(sequence, true);
@@ -160,8 +160,13 @@ pub struct SequenceBuffer<T> {
 
 impl<T> SequenceBuffer<T> {
     pub fn new(size: usize) -> Self {
+        let mut entries = Vec::with_capacity(size);
+        for _ in 0..size {
+            entries.push(None);
+        }
+        
         Self {
-            entries: vec![None; size],
+            entries,
             sequence: 0,
             size,
         }
