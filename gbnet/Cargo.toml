@@ -8,3 +8,4 @@ byteorder = "1.5"
 env_logger = "0.11.8"
 gbnet_macros = { path = "../gbnet_macros" }
 log = "0.4.27"
+rand = "0.8"
