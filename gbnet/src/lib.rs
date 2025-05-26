@@ -1,3 +1,4 @@
+// Core networking modules
 pub mod socket;
 pub mod packet;
 pub mod connection;
@@ -5,6 +6,10 @@ pub mod reliability;
 pub mod channel;
 pub mod config;
 
+// Serialization module (add this to your gbnet crate)
+pub mod serialize;
+
+// Re-export main types for convenience
 pub use socket::{UdpSocket, SocketError};
 pub use packet::{Packet, PacketHeader, PacketType};
 pub use connection::{Connection, ConnectionState, ConnectionError};
@@ -12,7 +17,7 @@ pub use reliability::{ReliableEndpoint, SequenceBuffer};
 pub use channel::{Channel, ChannelConfig, Reliability, Ordering};
 pub use config::NetworkConfig;
 
-// Re-export your serialization traits
+// Re-export serialization traits
 pub use serialize::{BitSerialize, BitDeserialize, ByteAlignedSerialize, ByteAlignedDeserialize};
 
 #[derive(Debug, Clone)]

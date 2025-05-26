@@ -1,7 +1,7 @@
 // packet.rs - Core packet structures for reliable UDP
 use std::io;
-
-use gbnet_macros::{NetworkSerialize, BitSerialize, BitDeserialize, bit_io::{BitBuffer, BitWrite, BitRead}};
+use gbnet_macros::NetworkSerialize;
+use crate::serialize::{BitSerialize, BitDeserialize, bit_io::{BitBuffer, BitWrite, BitRead}};
 
 #[derive(Debug, Clone, PartialEq, NetworkSerialize)]
 pub struct PacketHeader {
