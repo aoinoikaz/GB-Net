@@ -10,7 +10,6 @@ use crate::{
     socket::{UdpSocket, SocketError},
     reliability::ReliableEndpoint,
     channel::{Channel, ChannelError},
-    config::ChannelConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,6 +88,8 @@ impl Connection {
             channels.push(Channel::new(i as u8, channel_config));
         }
         
+        let packet_buffer_size = config.packet_buffer_size;
+        
         Self {
             config,
             state: ConnectionState::Disconnected,
@@ -104,7 +105,7 @@ impl Connection {
             local_sequence: 0,
             remote_sequence: 0,
             ack_bits: 0,
-            reliability: ReliableEndpoint::new(config.packet_buffer_size),
+            reliability: ReliableEndpoint::new(packet_buffer_size),
             channels,
             send_queue: VecDeque::new(),
             recv_queue: VecDeque::new(),
