@@ -3,8 +3,9 @@
 use gbnet::{
     UdpSocket, Packet, PacketHeader, PacketType,
     Connection, NetworkConfig,
-    BitSerialize, BitDeserialize, serialize::bit_io::BitBuffer,
+    BitSerialize, BitDeserialize,
 };
+use gbnet::serialize::bit_io::BitBuffer;
 use gbnet_macros::NetworkSerialize;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::thread;
