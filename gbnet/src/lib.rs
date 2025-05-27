@@ -1,3 +1,5 @@
+// lib.rs - Main library file for gbnet
+
 // Core networking modules
 pub mod socket;
 pub mod packet;
@@ -5,9 +7,11 @@ pub mod connection;
 pub mod reliability;
 pub mod channel;
 pub mod config;
-
-// Serialization module (add this to your gbnet crate)
 pub mod serialize;
+
+// Test modules (only compiled during testing)
+#[cfg(test)]
+mod tests;
 
 // Re-export main types for convenience
 pub use socket::{UdpSocket, SocketError};
@@ -19,6 +23,9 @@ pub use config::{NetworkConfig, ChannelConfig, Reliability, Ordering};
 
 // Re-export serialization traits
 pub use serialize::{BitSerialize, BitDeserialize, ByteAlignedSerialize, ByteAlignedDeserialize};
+
+// Re-export commonly used std types
+pub use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone)]
 pub struct NetworkStats {

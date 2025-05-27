@@ -126,30 +126,3 @@ impl UdpSocket {
         self.stats = SocketStats::default();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    #[test]
-    fn test_socket_creation() {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let socket = UdpSocket::bind(addr);
-        assert!(socket.is_ok());
-    }
-    
-    #[test]
-    fn test_socket_stats() {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let mut socket = UdpSocket::bind(addr).unwrap();
-        
-        let initial_stats = socket.stats();
-        assert_eq!(initial_stats.packets_sent, 0);
-        assert_eq!(initial_stats.packets_received, 0);
-        
-        socket.reset_stats();
-        let reset_stats = socket.stats();
-        assert_eq!(reset_stats.packets_sent, 0);
-    }
-}
