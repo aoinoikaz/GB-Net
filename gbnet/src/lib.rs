@@ -21,6 +21,8 @@ pub use config::{NetworkConfig, ChannelConfig, Reliability, Ordering};
 
 // Re-export serialization traits
 pub use serialize::{BitSerialize, BitDeserialize, ByteAlignedSerialize, ByteAlignedDeserialize};
+// Re-export BitBuffer for testing
+pub use serialize::bit_io::BitBuffer;
 
 // Re-export commonly used std types
 pub use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
