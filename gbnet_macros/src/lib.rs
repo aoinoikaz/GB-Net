@@ -13,9 +13,15 @@ fn add_trait_bounds(mut generics: Generics, bound: proc_macro2::TokenStream) -> 
 }
 
 fn get_crate_path() -> proc_macro2::TokenStream {
-    // Use absolute path to gbnet crate
-    // This assumes the crate is available as `gbnet` in the user's dependencies
-    quote! { ::gbnet }
+    // Check if we're inside the gbnet crate itself
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    if crate_name == "gbnet" {
+        // We're inside gbnet, use crate::
+        quote! { crate }
+    } else {
+        // We're in another crate, use ::gbnet
+        quote! { ::gbnet }
+    }
 }
 
 fn should_serialize_field(field: &Field) -> bool {
