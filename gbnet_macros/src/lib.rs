@@ -56,15 +56,8 @@ fn get_max_len(field: &Field, input: &DeriveInput) -> Option<usize> {
                         ..
                     }),
                     ..
-                }) => {
-                    let result = lit.base10_parse::<usize>().ok();
-                    //eprintln!("Field max_len for {:?}: {:?}", field.ident, result);
-                    result
-                }
-                _ => {
-                    eprintln!("Field max_len parse failed for {:?}", field.ident);
-                    None
-                }
+                }) => lit.base10_parse::<usize>().ok(),
+                _ => None
             }
         });
 
@@ -79,15 +72,8 @@ fn get_max_len(field: &Field, input: &DeriveInput) -> Option<usize> {
                             ..
                         }),
                         ..
-                    }) => {
-                        let result = lit.base10_parse::<usize>().ok();
-                        //eprintln!("Default max_len for input: {:?}", result);
-                        result
-                    }
-                    _ => {
-                        //eprintln!("Default max_len parse failed");
-                        None
-                    }
+                    }) => lit.base10_parse::<usize>().ok(),
+                    _ => None
                 }
             });
         return default_max_len;
@@ -116,7 +102,6 @@ fn is_option_type(ty: &Type) -> bool {
     }
 }
 
-// NEW: Check if type is String
 fn is_string_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
         type_path.path.segments.iter().any(|segment| segment.ident == "String")
@@ -125,12 +110,10 @@ fn is_string_type(ty: &Type) -> bool {
     }
 }
 
-// NEW: Check if type is an array [T; N]
 fn is_array_type(ty: &Type) -> bool {
     matches!(ty, Type::Array(_))
 }
 
-// NEW: Extract array length if it's an array type
 fn get_array_length(ty: &Type) -> Option<usize> {
     if let Type::Array(type_array) = ty {
         if let syn::Expr::Lit(expr_lit) = &type_array.len {
@@ -336,7 +319,6 @@ fn generate_byte_aligned_deserialize_impl(input: &DeriveInput, name: &syn::Ident
 }
 
 fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
-    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     match fields {
         Fields::Named(fields) => {
@@ -379,7 +361,6 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 }
                             }
                         } else if is_string_type(&f.ty) {
-                            // NEW: Handle String type with max_len support
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
                                 let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
@@ -399,7 +380,6 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 }
                             }
                         } else if is_array_type(&f.ty) {
-                            // NEW: Handle fixed arrays - no length prefix needed
                             quote! {
                                 for item in &self.#name {
                                     item.bit_serialize(writer)?;
@@ -470,7 +450,6 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 }
                             }
                         } else if is_string_type(&fields.unnamed[i].ty) {
-                            // NEW: Handle String type in tuple structs
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
                                 let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
@@ -490,7 +469,6 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
                                 }
                             }
                         } else if is_array_type(&fields.unnamed[i].ty) {
-                            // NEW: Handle fixed arrays in tuple structs
                             quote! {
                                 for item in &self.#index {
                                     item.bit_serialize(writer)?;
@@ -526,7 +504,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
 }
 
 fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
-    let crate_path = get_crate_path();
+    let crate_path = if is_bit { get_crate_path() } else { quote!{} };
     let defaults = get_default_bits(input);
     match fields {
         Fields::Named(fields) => {
@@ -582,7 +560,6 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 }
                             }
                         } else if is_string_type(&f.ty) {
-                            // NEW: Handle String deserialization
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
                                 let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
@@ -605,7 +582,6 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 })?;
                             }
                         } else if is_array_type(&f.ty) {
-                            // NEW: Handle fixed array deserialization
                             if let Some(array_len) = get_array_length(&f.ty) {
                                 quote! {
                                     let mut #name = Vec::with_capacity(#array_len);
@@ -703,7 +679,6 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 }
                             }
                         } else if is_string_type(&f.ty) {
-                            // NEW: Handle String in tuple structs
                             let (len_bits, max_len_expr) = if let Some(max_len) = max_len {
                                 let len_bits = ((max_len + 1) as f64).log2().ceil() as usize;
                                 (len_bits, quote! { #max_len })
@@ -726,7 +701,6 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 })?;
                             }
                         } else if is_array_type(&f.ty) {
-                            // NEW: Handle fixed arrays in tuple structs
                             if let Some(array_len) = get_array_length(&f.ty) {
                                 quote! {
                                     let mut #name = Vec::with_capacity(#array_len);
@@ -772,9 +746,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
     }
 }
 
-// The enum functions remain the same as your original code
 fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
-    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     let variant_count = data.variants.len();
     let min_bits = if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize };
@@ -980,7 +952,7 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
 }
 
 fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
-    let crate_path = get_crate_path();
+    let crate_path = if is_bit { get_crate_path() } else { quote!{} };
     let defaults = get_default_bits(input);
     let variant_count = data.variants.len();
     let min_bits = if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize };
