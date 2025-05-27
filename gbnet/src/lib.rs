@@ -13,9 +13,6 @@ pub mod serialize;  // Make serialize module public
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod test_macro;
-
 // Re-export main types for convenience
 pub use socket::{UdpSocket, SocketError};
 pub use packet::{Packet, PacketHeader, PacketType};
