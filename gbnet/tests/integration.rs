@@ -1,5 +1,3 @@
-// tests/integration.rs - Full integration tests
-
 use gbnet::{
     UdpSocket, Packet, PacketHeader, PacketType,
     Connection, NetworkConfig,
@@ -69,7 +67,7 @@ fn test_full_packet_flow() -> std::io::Result<()> {
     let (received_data, _from) = server.recv_from()?;
     
     // Deserialize network packet
-    let received_packet = Packet::deserialize(&received_data)?;
+    let received_packet = Packet::deserialize(received_data)?;
     
     // Deserialize game data
     let mut payload_buffer = BitBuffer::from_bytes(received_packet.payload);
@@ -96,7 +94,7 @@ fn test_connection_handshake_simulation() {
     let actual_client_addr = client_socket.local_addr().unwrap();
     
     // Create connections
-    let mut client_conn = Connection::new(config.clone(), actual_client_addr, actual_server_addr);
+    let mut client_conn = Connection::new(config.clone(), actual_server_addr, actual_client_addr);
     let mut server_conn = Connection::new(config, actual_server_addr, actual_client_addr);
     
     // Client initiates connection

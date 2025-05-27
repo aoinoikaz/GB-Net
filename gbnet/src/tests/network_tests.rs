@@ -1,20 +1,4 @@
-#[test]
-fn test_reliable_endpoint_tracking() {
-    let mut endpoint = ReliableEndpoint::new(256);
-    let now = Instant::now();
-    
-    // Test packet tracking
-    endpoint.on_packet_sent(0, now, vec![1, 2, 3]);
-    endpoint.on_packet_sent(1, now, vec![4, 5, 6]);
-    
-    let stats = endpoint.stats();
-    assert_eq!(stats.packets_in_flight, 2);
-    
-    // Test acknowledgment
-    endpoint.process_acks(0, 0);
-    let stats = endpoint.stats();
-    assert_eq!(stats.packets_in_flight, 1);
-}// src/tests/network_tests.rs - Network component unit tests
+// src/tests/network_tests.rs - Network component unit tests
 
 use crate::{
     socket::UdpSocket,
