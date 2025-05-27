@@ -56,17 +56,22 @@ fn test_full_packet_flow() -> std::io::Result<()> {
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     
-    let mut server = UdpSocket::bind(server_addr)?;
-    let mut client = UdpSocket::bind(client_addr)?;
+    let mut server = UdpSocket::bind(server_addr)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Socket error: {:?}", e)))?;
+    let mut client = UdpSocket::bind(client_addr)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Socket error: {:?}", e)))?;
     
-    let actual_server_addr = server.local_addr()?;
+    let actual_server_addr = server.local_addr()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Socket error: {:?}", e)))?;
     
     // Send packet
-    client.send_to(&packet_data, actual_server_addr)?;
+    client.send_to(&packet_data, actual_server_addr)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Socket error: {:?}", e)))?;
     
     // Receive packet
     thread::sleep(Duration::from_millis(10));
-    let (received_data, _from) = server.recv_from()?;
+    let (received_data, _from) = server.recv_from()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Socket error: {:?}", e)))?;
     
     // Deserialize network packet
     let received_packet = Packet::deserialize(received_data)?;
@@ -89,15 +94,15 @@ fn test_connection_handshake_simulation() {
     let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     
-    let mut server_socket = UdpSocket::bind(server_addr).unwrap();
-    let mut client_socket = UdpSocket::bind(client_addr).unwrap();
+    let server_socket = UdpSocket::bind(server_addr).unwrap();
+    let client_socket = UdpSocket::bind(client_addr).unwrap();
     
     let actual_server_addr = server_socket.local_addr().unwrap();
     let actual_client_addr = client_socket.local_addr().unwrap();
     
     // Create connections
     let mut client_conn = Connection::new(config.clone(), actual_server_addr, actual_client_addr);
-    let mut server_conn = Connection::new(config, actual_server_addr, actual_client_addr);
+    let server_conn = Connection::new(config, actual_server_addr, actual_client_addr);
     
     // Client initiates connection
     client_conn.connect().unwrap();
@@ -127,8 +132,10 @@ fn test_multi_channel_messages() -> std::io::Result<()> {
     let mut unreliable_channel = Channel::new(1, unreliable_config);
     
     // Send messages
-    reliable_channel.send(b"important data", true)?;
-    unreliable_channel.send(b"position update", false)?;
+    reliable_channel.send(b"important data", true)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Channel error: {:?}", e)))?;
+    unreliable_channel.send(b"position update", false)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Channel error: {:?}", e)))?;
     
     // Simulate receiving
     reliable_channel.on_packet_received(b"important data".to_vec());
