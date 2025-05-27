@@ -11,6 +11,9 @@ pub mod serialize;  // Make serialize module public
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod test_macro;
+
 // Re-export main types for convenience
 pub use socket::{UdpSocket, SocketError};
 pub use packet::{Packet, PacketHeader, PacketType};
@@ -18,6 +21,9 @@ pub use connection::{Connection, ConnectionState, ConnectionError};
 pub use reliability::{ReliableEndpoint, SequenceBuffer};
 pub use channel::{Channel, ChannelError};
 pub use config::{NetworkConfig, ChannelConfig, Reliability, Ordering};
+
+// In gbnet/src/lib.rs, add:
+pub use gbnet_macros::NetworkSerialize;
 
 // Re-export serialization traits and types
 pub use serialize::{BitSerialize, BitDeserialize, ByteAlignedSerialize, ByteAlignedDeserialize};

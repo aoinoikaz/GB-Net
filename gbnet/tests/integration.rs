@@ -2,9 +2,11 @@ use gbnet::{
     UdpSocket, Packet, PacketHeader, PacketType,
     Connection, NetworkConfig,
     BitSerialize, BitDeserialize,
-    BitBuffer,  // Add this line
+    BitBuffer,
 };
-use gbnet_macros::NetworkSerialize;
+
+use gbnet::NetworkSerialize;  // Instead of use gbnet_macros::NetworkSerialize;
+
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::thread;
 use std::time::Duration;
