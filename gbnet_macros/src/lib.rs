@@ -12,6 +12,12 @@ fn add_trait_bounds(mut generics: Generics, bound: proc_macro2::TokenStream) -> 
     generics
 }
 
+fn get_crate_path() -> proc_macro2::TokenStream {
+    // Use absolute path to gbnet crate
+    // This assumes the crate is available as `gbnet` in the user's dependencies
+    quote! { ::gbnet }
+}
+
 fn should_serialize_field(field: &Field) -> bool {
     !field.attrs.iter().any(|attr| attr.path().is_ident("no_serialize"))
 }
@@ -244,7 +250,8 @@ pub fn derive_network_serialize(input: TokenStream) -> TokenStream {
 }
 
 fn generate_bit_serialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_macro2::TokenStream {
-    let generics = add_trait_bounds(input.generics.clone(), quote! { crate::serialize::BitSerialize });
+    let crate_path = get_crate_path();
+    let generics = add_trait_bounds(input.generics.clone(), quote! { #crate_path::serialize::BitSerialize });
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let serialize_body = match &input.data {
@@ -254,8 +261,8 @@ fn generate_bit_serialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_m
     };
 
     quote! {
-        impl #impl_generics crate::serialize::BitSerialize for #name #ty_generics #where_clause {
-            fn bit_serialize<W: crate::serialize::bit_io::BitWrite>(&self, writer: &mut W) -> std::io::Result<()> {
+        impl #impl_generics #crate_path::serialize::BitSerialize for #name #ty_generics #where_clause {
+            fn bit_serialize<W: #crate_path::serialize::bit_io::BitWrite>(&self, writer: &mut W) -> std::io::Result<()> {
                 #serialize_body
             }
         }
@@ -263,7 +270,8 @@ fn generate_bit_serialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_m
 }
 
 fn generate_bit_deserialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_macro2::TokenStream {
-    let generics = add_trait_bounds(input.generics.clone(), quote! { crate::serialize::BitDeserialize });
+    let crate_path = get_crate_path();
+    let generics = add_trait_bounds(input.generics.clone(), quote! { #crate_path::serialize::BitDeserialize });
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let deserialize_body = match &input.data {
@@ -273,8 +281,8 @@ fn generate_bit_deserialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc
     };
 
     quote! {
-        impl #impl_generics crate::serialize::BitDeserialize for #name #ty_generics #where_clause {
-            fn bit_deserialize<R: crate::serialize::bit_io::BitRead>(reader: &mut R) -> std::io::Result<Self> {
+        impl #impl_generics #crate_path::serialize::BitDeserialize for #name #ty_generics #where_clause {
+            fn bit_deserialize<R: #crate_path::serialize::bit_io::BitRead>(reader: &mut R) -> std::io::Result<Self> {
                 #deserialize_body
             }
         }
@@ -282,7 +290,8 @@ fn generate_bit_deserialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc
 }
 
 fn generate_byte_aligned_serialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_macro2::TokenStream {
-    let generics = add_trait_bounds(input.generics.clone(), quote! { crate::serialize::ByteAlignedSerialize });
+    let crate_path = get_crate_path();
+    let generics = add_trait_bounds(input.generics.clone(), quote! { #crate_path::serialize::ByteAlignedSerialize });
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let serialize_body = match &input.data {
@@ -292,7 +301,7 @@ fn generate_byte_aligned_serialize_impl(input: &DeriveInput, name: &syn::Ident) 
     };
 
     quote! {
-        impl #impl_generics crate::serialize::ByteAlignedSerialize for #name #ty_generics #where_clause {
+        impl #impl_generics #crate_path::serialize::ByteAlignedSerialize for #name #ty_generics #where_clause {
             fn byte_aligned_serialize<W: std::io::Write + byteorder::WriteBytesExt>(&self, writer: &mut W) -> std::io::Result<()> {
                 #serialize_body
             }
@@ -301,7 +310,8 @@ fn generate_byte_aligned_serialize_impl(input: &DeriveInput, name: &syn::Ident) 
 }
 
 fn generate_byte_aligned_deserialize_impl(input: &DeriveInput, name: &syn::Ident) -> proc_macro2::TokenStream {
-    let generics = add_trait_bounds(input.generics.clone(), quote! { crate::serialize::ByteAlignedDeserialize });
+    let crate_path = get_crate_path();
+    let generics = add_trait_bounds(input.generics.clone(), quote! { #crate_path::serialize::ByteAlignedDeserialize });
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let deserialize_body = match &input.data {
@@ -311,7 +321,7 @@ fn generate_byte_aligned_deserialize_impl(input: &DeriveInput, name: &syn::Ident
     };
 
     quote! {
-        impl #impl_generics crate::serialize::ByteAlignedDeserialize for #name #ty_generics #where_clause {
+        impl #impl_generics #crate_path::serialize::ByteAlignedDeserialize for #name #ty_generics #where_clause {
             fn byte_aligned_deserialize<R: std::io::Read + byteorder::ReadBytesExt>(reader: &mut R) -> std::io::Result<Self> {
                 #deserialize_body
             }
@@ -320,6 +330,7 @@ fn generate_byte_aligned_deserialize_impl(input: &DeriveInput, name: &syn::Ident
 }
 
 fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
+    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     match fields {
         Fields::Named(fields) => {
@@ -509,6 +520,7 @@ fn generate_struct_serialize(fields: &Fields, is_bit: bool, input: &DeriveInput)
 }
 
 fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
+    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     match fields {
         Fields::Named(fields) => {
@@ -560,7 +572,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 }
                                 let mut #name = Vec::with_capacity(len);
                                 for _ in 0..len {
-                                    #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                    #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
                         } else if is_string_type(&f.ty) {
@@ -592,22 +604,22 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 quote! {
                                     let mut #name = Vec::with_capacity(#array_len);
                                     for _ in 0..#array_len {
-                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                        #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                     }
                                     let #name: [_; #array_len] = #name.try_into().map_err(|_| {
                                         std::io::Error::new(std::io::ErrorKind::InvalidData, "Array length mismatch")
                                     })?;
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                             }
                         } else if is_option_type(&f.ty) {
-                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
-                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         }
                     } else {
-                        quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
+                        quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                     };
                     
                     if is_byte_align && is_bit {
@@ -681,7 +693,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 }
                                 let mut #name = Vec::with_capacity(len);
                                 for _ in 0..len {
-                                    #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                    #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                 }
                             }
                         } else if is_string_type(&f.ty) {
@@ -713,22 +725,22 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
                                 quote! {
                                     let mut #name = Vec::with_capacity(#array_len);
                                     for _ in 0..#array_len {
-                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                        #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                     }
                                     let #name: [_; #array_len] = #name.try_into().map_err(|_| {
                                         std::io::Error::new(std::io::ErrorKind::InvalidData, "Array length mismatch")
                                     })?;
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                             }
                         } else if is_option_type(&f.ty) {
-                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         } else {
-                            quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                            quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                         }
                     } else {
-                        quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
+                        quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                     };
                     
                     if is_byte_align && is_bit {
@@ -756,6 +768,7 @@ fn generate_struct_deserialize(fields: &Fields, is_bit: bool, input: &DeriveInpu
 
 // The enum functions remain the same as your original code
 fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
+    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     let variant_count = data.variants.len();
     let min_bits = if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize };
@@ -961,6 +974,7 @@ fn generate_enum_serialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInp
 }
 
 fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveInput) -> proc_macro2::TokenStream {
+    let crate_path = get_crate_path();
     let defaults = get_default_bits(input);
     let variant_count = data.variants.len();
     let min_bits = if variant_count == 0 { 0 } else { (variant_count as f64).log2().ceil() as usize };
@@ -1028,11 +1042,11 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     }
                                     let mut #name = Vec::with_capacity(len);
                                     for _ in 0..len {
-                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                        #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                     }
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                             }
                         } else {
                             if bits > 0 {
@@ -1042,10 +1056,10 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<byteorder::LittleEndian>()? as _; },
                                     Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<byteorder::LittleEndian>()? as _; },
                                     Some("bool") => quote! { let #name = reader.read_u8()? != 0; },
-                                    _ => quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
+                                    _ => quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                             }
                         };
                         if is_byte_align && is_bit {
@@ -1120,11 +1134,11 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     }
                                     let mut #name = Vec::with_capacity(len);
                                     for _ in 0..len {
-                                        #name.push(crate::serialize::BitDeserialize::bit_deserialize(reader)?);
+                                        #name.push(#crate_path::serialize::BitDeserialize::bit_deserialize(reader)?);
                                     }
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::BitDeserialize::bit_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::BitDeserialize::bit_deserialize(reader)?; }
                             }
                         } else {
                             if bits > 0 {
@@ -1134,10 +1148,10 @@ fn generate_enum_deserialize(data: &syn::DataEnum, is_bit: bool, input: &DeriveI
                                     Some("u32") | Some("i32") => quote! { let #name = reader.read_u32::<byteorder::LittleEndian>()? as _; },
                                     Some("u64") | Some("i64") => quote! { let #name = reader.read_u64::<byteorder::LittleEndian>()? as _; },
                                     Some("bool") => quote! { let #name = reader.read_u8()? != 0; },
-                                    _ => quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
+                                    _ => quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; },
                                 }
                             } else {
-                                quote! { let #name = crate::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
+                                quote! { let #name = #crate_path::serialize::ByteAlignedDeserialize::byte_aligned_deserialize(reader)?; }
                             }
                         };
                         if is_byte_align && is_bit {
