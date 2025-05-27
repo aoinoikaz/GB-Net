@@ -5,7 +5,7 @@ use gbnet::{
     BitBuffer,
 };
 
-use gbnet::NetworkSerialize;  // Instead of use gbnet_macros::NetworkSerialize;
+use gbnet::NetworkSerialize;  // Use the re-exported version
 
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::thread;

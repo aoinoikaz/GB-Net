@@ -1,0 +1,3 @@
+[workspace]
+members = ["gbnet", "gbnet_macros"]
+resolver = "2"
