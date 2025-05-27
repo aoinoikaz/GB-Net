@@ -1,219 +1,219 @@
-# GBNet #
+# GBNet
 
-GBNet is a Rust library for multiplayer game networking, designed for efficient, reliable, and high-performance real-time games. Its cornerstone is a powerful serialization system that supports both bit-packed and byte-aligned serialization/deserialization, optimized to minimize bandwidth while handling complex data structures. Paired with a robust networking stack, GBNet enables seamless multiplayer experiences with features like reliable messaging, state synchronization, and more.
+GBNet is a high-performance Rust library for multiplayer game networking, featuring an advanced bit-packed serialization system and reliable UDP networking stack. Designed for real-time games, GBNet minimizes bandwidth usage while providing robust networking primitives for building multiplayer experiences.
 
-## Features ##
+## Features
 
-### Advanced Serialization: ###
-- Bit-packed and byte-aligned serialization/deserialization for structs, enums, and vectors, with fine-grained control over data encoding.
-- Bit-Level Control: Custom bit sizes via #[bits = N] and defaults with #[default_bits].
-- Byte Alignment: Align fields to byte boundaries using #[byte_align].
-- Field Skipping: Exclude fields with #[no_serialize].
-- Vector Length Limits: Cap vectors with #[max_len = N] or #[default_max_len].
+### 🎯 Advanced Serialization System
+- **Bit-Packed Encoding**: Serialize data with bit-level precision to minimize bandwidth
+- **Flexible Field Control**: Custom bit sizes via `#[bits = N]` attributes
+- **Smart Defaults**: Set project-wide defaults with `#[default_bits(type = N)]`
+- **Selective Serialization**: Skip fields with `#[no_serialize]`
+- **Byte Alignment**: Force byte boundaries with `#[byte_align]`
+- **Vector Optimization**: Cap vector lengths with `#[max_len = N]` for efficient encoding
 
-### Advanced networking capabilities ###
-- Connections: Client-server and peer-to-peer connection management.
-- Reliable Messages: Guaranteed message delivery over UDP.
-- Large Data Transfer: Fragmentation for large payloads.
-- Packet Fragmentation: Efficient packet splitting and reassembly.
-- Packet Delivery: Ordered and reliable packet delivery.
-- State Synchronization: Game state syncing across clients.
-- Snapshot Compression: Compressed game state snapshots.
-- Snapshot Interpolation: Smooth client-side interpolation.
-- Deterministic Lockstep: Lockstep support for strategy games.
-- Congestion Avoidance: Network congestion prevention.
-- Fixed Timestep: Consistent game updates.
+### 🌐 Robust Networking Stack
+- **Reliable UDP**: Message delivery guarantees over UDP
+- **Connection Management**: Secure handshake protocol with challenge-response authentication
+- **Channel System**: Multiple logical channels with configurable reliability
+- **Packet Fragmentation**: Automatic splitting and reassembly of large messages
+- **Congestion Control**: Built-in flow control and congestion avoidance
+- **Sequence Management**: Proper handling of out-of-order packets
 
-## Installation ##
-Add GBNet to your Cargo.toml:
+### 🚀 Performance Features
+- **Zero-Copy Design**: Minimal allocations in hot paths
+- **Optimized Bit Operations**: Fast bit reading/writing with byte-aligned fast paths
+- **Configurable Buffers**: Tune memory usage for your specific needs
+- **Statistics Tracking**: Built-in performance metrics and diagnostics
+
+## Installation
+
+Add GBNet to your `Cargo.toml`:
+
+```toml
 [dependencies]
 gbnet = { git = "https://github.com/gondolabros/gbnet.git" }
 gbnet_macros = { git = "https://github.com/gondolabros/gbnet.git" }
+```
 
-## Usage ##
-GBNet’s serialization is powered by the NetworkSerialize macro, which derives bit- and byte-aligned serialization/deserialization for structs, enums, and vectors. It’s built for efficiency, allowing developers to optimize bandwidth with bit-level precision while supporting complex data like nested structs, enums with payloads, and length-capped vectors.
+## Quick Start
 
-### Serialization Capabilities ###
-
--Bit-Packed Serialization: Encodes fields with custom bit counts using #[bits = N], e.g., a u8 as 6 bits to save bandwidth.
--Byte-Aligned Serialization: Pads fields to byte boundaries with #[byte_align], ideal for byte-oriented protocols.
-
-### Annotations: ###
--[bits = N]: Sets bit count for a field (e.g., #[bits = 6] for a 6-bit u8).
--[byte_align]: Pads to a byte boundary before the annotated field.
--[no_serialize]: Skips a field, using its default value on deserialization.
--[max_len = N]: Caps vector lengths, encoding length in ceil(log2(N+1)) bits.
--[default_bits(type = N)]: Sets default bit sizes (e.g., u8 = 4, u16 = 10).
--[default_max_len = N]: Default max length for vectors without #[max_len].
-
-Structs and Enums: Handles nested structs and enums with payloads (e.g., Running { speed: u8 }).
-Vectors: Supports dynamic-length vectors with length caps.
-Error Handling: Enforces bit size and vector length constraints, returning InvalidData errors for violations.
-Testing: Comprehensive test suite validates primitives, vectors, enums, nested structs, alignment, and edge cases.
-
-Examples
-1. Bit-Packed Serialization with Custom Bits
-Serialize a struct with custom bit sizes:
+### Basic Serialization
 
 ```rust
-use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
-use gbnet_macros::NetworkSerialize;
-
-#[derive(NetworkSerialize)]
-struct PrimitivePacket {
-    a: u8,           // 8 bits (macro default)
-    #[bits = 6]
-    b: u8,           // 6 bits
-    c: bool,         // 1 bit
-}
-
-fn main() -> std::io::Result<()> {
-    let packet = PrimitivePacket { a: 15, b: 50, c: true };
-    let mut bit_buffer = BitBuffer::new();
-    packet.bit_serialize(&mut bit_buffer)?;
-    bit_buffer.flush()?;
-    let bytes = bit_buffer.into_bytes();
-    println!("Serialized bytes: {:?}", bytes); // [15, 202]
-    Ok(())
-}```
-
-Serializes a (8 bits: 00001111), b (6 bits: 110010), c (1 bit: 1), totaling 15 bits, padded to 16 bits.
-
-
-2. Skipping Fields with #[no_serialize]
-Exclude fields from serialization:
-
-```rust
-use gbnet::serialize::{BitSerialize, BitDeserialize, bit_io::BitBuffer};
-use gbnet_macros::NetworkSerialize;
+use gbnet::{NetworkSerialize, BitSerialize, BitDeserialize, BitBuffer};
 
 #[derive(NetworkSerialize, Debug, PartialEq)]
-struct NoSerializePacket {
-    a: u8,                   // 8 bits
-    #[no_serialize]
-    b: u16,                  // Skipped
-    c: bool,                 // 1 bit
-    #[no_serialize]
-    d: String,               // Skipped
+struct PlayerUpdate {
+    #[bits = 10]
+    x: u16,      // 0-1023 range
+    #[bits = 10] 
+    y: u16,      // 0-1023 range
+    #[bits = 7]
+    health: u8,  // 0-127 range
+    moving: bool,// 1 bit
 }
 
 fn main() -> std::io::Result<()> {
-    let packet = NoSerializePacket {
-        a: 42,
-        b: 9999,
-        c: true,
-        d: "test".to_string(),
+    let update = PlayerUpdate {
+        x: 512,
+        y: 768,
+        health: 100,
+        moving: true,
     };
-    let mut bit_buffer = BitBuffer::new();
-    packet.bit_serialize(&mut bit_buffer)?;
-    bit_buffer.flush()?;
-    let bytes = bit_buffer.into_bytes();
     
-    let mut bit_buffer = BitBuffer::from_bytes(bytes);
-    let deserialized = NoSerializePacket::bit_deserialize(&mut bit_buffer)?;
-    assert_eq!(deserialized.a, 42);
-    assert_eq!(deserialized.c, true);
-    assert_eq!(deserialized.b, 0); // Default
-    assert_eq!(deserialized.d, ""); // Default
+    // Serialize
+    let mut buffer = BitBuffer::new();
+    update.bit_serialize(&mut buffer)?;
+    let bytes = buffer.into_bytes(true)?;
+    
+    // Deserialize
+    let mut buffer = BitBuffer::from_bytes(bytes);
+    let decoded = PlayerUpdate::bit_deserialize(&mut buffer)?;
+    
+    assert_eq!(update, decoded);
     Ok(())
-}```
-
-Serializes a (8 bits) and c (1 bit), totaling 9 bits, padded to 16 bits. Skipped fields use defaults.
-
-
-3. Vector with Length Limits
-Serialize a capped vector:
-
-```rust
-use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
-use gbnet_macros::NetworkSerialize;
-
-#[derive(NetworkSerialize)]
-#[default_max_len = 4]
-struct VecPacket {
-    #[max_len = 2]
-    data: Vec<u8>,
 }
+```
 
-fn main() -> std::io::Result<()> {
-    let packet = VecPacket { data: vec![1, 2] };
-    let mut bit_buffer = BitBuffer::new();
-    packet.bit_serialize(&mut bit_buffer)?;
-    bit_buffer.flush()?;
-    let bytes = bit_buffer.into_bytes();
-    println!("Serialized bytes: {:?}", bytes); // [128, 64, 128]
-    Ok(())
-}```
-
-Serializes length (2 bits: 10), then data=[1, 2] (8 bits each: 00000001, 00000010), totaling 18 bits, padded to 24 bits.
-
-4. Byte Alignment
-Align fields to byte boundaries:
+### Network Communication
 
 ```rust
-use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
-use gbnet_macros::NetworkSerialize;
+use gbnet::{UdpSocket, Connection, NetworkConfig};
+use std::net::SocketAddr;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a UDP socket
+    let mut socket = UdpSocket::bind("127.0.0.1:0")?;
+    
+    // Configure networking
+    let config = NetworkConfig::default();
+    
+    // Create a connection
+    let remote_addr: SocketAddr = "127.0.0.1:8080".parse()?;
+    let local_addr = socket.local_addr()?;
+    let mut connection = Connection::new(config, local_addr, remote_addr);
+    
+    // Connect to server
+    connection.connect()?;
+    
+    // Send data on a channel
+    connection.send(0, b"Hello, server!", true)?;
+    
+    // Update connection (handles retries, timeouts, etc.)
+    connection.update(&mut socket)?;
+    
+    // Receive data
+    if let Some(data) = connection.receive(0) {
+        println!("Received: {:?}", data);
+    }
+    
+    Ok(())
+}
+```
+
+## Serialization Attributes
+
+### Struct/Enum Attributes
+- `#[default_bits(u8 = 4, u16 = 10)]` - Set default bit sizes for types
+- `#[default_max_len = 100]` - Default max length for vectors
+- `#[bits = 4]` - For enums, bits used for variant discriminant
+
+### Field Attributes
+- `#[bits = N]` - Use N bits for this field (must fit the value range)
+- `#[byte_align]` - Align to byte boundary before this field
+- `#[no_serialize]` - Skip field during serialization (uses Default on deserialization)
+- `#[max_len = N]` - Maximum length for Vec fields
+
+## Examples
+
+### Efficient Game State
+
+```rust
 #[derive(NetworkSerialize)]
-struct AlignPacket {
-    a: bool,         // 1 bit
+#[default_bits(u8 = 4, u16 = 12)]
+struct GameState {
+    tick: u32,                          // 32 bits
+    #[max_len = 32]
+    players: Vec<PlayerData>,           // 5 bits length + data
+    #[bits = 3]
+    game_mode: u8,                      // 3 bits (0-7)
     #[byte_align]
-    b: u8,           // 8 bits, after padding
-}
-
-fn main() -> std::io::Result<()> {
-    let packet = AlignPacket { a: true, b: 10 };
-    let mut bit_buffer = BitBuffer::new();
-    packet.bit_serialize(&mut bit_buffer)?;
-    bit_buffer.flush()?;
-    let bytes = bit_buffer.into_bytes();
-    println!("Serialized bytes: {:?}", bytes); // [128, 10]
-    Ok(())
-}```
-
-Serializes a (1 bit: 1), pads (7 bits: 0000000), then b (8 bits: 00001010), totaling 16 bits.
-5. Complex Nested Structures
-Serialize nested structs and enums:
-use gbnet::serialize::{BitSerialize, bit_io::BitBuffer};
-use gbnet_macros::NetworkSerialize;
-
-#[derive(NetworkSerialize, Debug)]
-struct PlayerState {
-    #[bits = 4]
-    health: u8, // 4 bits
-}
-
-#[derive(NetworkSerialize, Debug)]
-enum PlayerStatus {
-    Idle,                     // 1 bit: 0
-    Running { #[bits = 4] speed: u8 }, // 1 bit: 1 + 4 bits
+    checksum: u16,                      // 16 bits, byte-aligned
 }
 
 #[derive(NetworkSerialize)]
-#[default_bits(u8 = 4, u16 = 10, bool = 1)]
-#[default_max_len = 16]
-struct ComplexPacket {
-    id: u16,                 // 10 bits
-    #[bits = 6]
-    flags: u8,               // 6 bits
-    #[max_len = 4]
-    players: Vec<PlayerState>, // 3 bits (length) + 4 bits per player
-    status: PlayerStatus,    // 1 bit + payload
+struct PlayerData {
+    id: u8,                             // 4 bits (from default_bits)
+    #[bits = 10]
+    x: u16,                             // 10 bits
+    #[bits = 10]
+    y: u16,                             // 10 bits
+    state: PlayerState,                 // Variable (enum)
 }
 
-fn main() -> std::io::Result<()> {
-    let packet = ComplexPacket {
-        id: 1023,
-        flags: 63,
-        players: vec![PlayerState { health: 15 }, PlayerState { health: 10 }],
-        status: PlayerStatus::Running { speed: 7 },
-    };
-    let mut bit_buffer = BitBuffer::new();
-    packet.bit_serialize(&mut bit_buffer)?;
-    bit_buffer.flush()?;
-    let bytes = bit_buffer.into_bytes();
-    println!("Serialized bytes: {:?}", bytes); // [255, 255, 95, 87, ...]
-    Ok(())
+#[derive(NetworkSerialize)]
+#[bits = 2]  // 4 variants = 2 bits
+enum PlayerState {
+    Idle,
+    Walking { #[bits = 8] speed: u8 },
+    Running { #[bits = 8] speed: u8 },
+    Dead,
 }
+```
 
-Serializes id (10 bits), flags (6 bits), players length (3 bits), two PlayerState (4 bits each), and status (1 bit + 4 bits), padded to 64 bits.
+### Reliable Messaging
+
+```rust
+use gbnet::{Channel, ChannelConfig, Reliability, Ordering};
+
+// Configure a reliable, ordered channel for chat messages
+let chat_config = ChannelConfig {
+    reliability: Reliability::Reliable,
+    ordering: Ordering::Ordered,
+    max_message_size: 1024,
+    message_buffer_size: 100,
+    block_on_full: true,
+};
+
+let mut chat_channel = Channel::new(0, chat_config);
+
+// Send a chat message
+chat_channel.send(b"Hello, world!", true)?;
+
+// Configure an unreliable channel for position updates  
+let position_config = ChannelConfig {
+    reliability: Reliability::Unreliable,
+    ordering: Ordering::Unordered,
+    ..Default::default()
+};
+
+let mut position_channel = Channel::new(1, position_config);
+```
+
+## Architecture
+
+GBNet is organized into several key modules:
+
+- **`serialize`**: Bit-packed and byte-aligned serialization traits and implementations
+- **`packet`**: Core packet structures and protocol definitions
+- **`connection`**: Connection state management and handshake protocol
+- **`reliability`**: Reliable delivery, acknowledgments, and retransmission
+- **`channel`**: Multiple logical channels with different delivery guarantees
+- **`socket`**: Platform-agnostic UDP socket wrapper
+
+## Performance Tips
+
+1. **Use appropriate bit sizes**: Don't use more bits than necessary
+2. **Group small fields**: Multiple bools can share a byte efficiently  
+3. **Consider alignment**: Use `#[byte_align]` for fields that benefit from it
+4. **Set reasonable max lengths**: Smaller max_len values use fewer bits
+5. **Profile your packets**: Use the built-in statistics to optimize
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
