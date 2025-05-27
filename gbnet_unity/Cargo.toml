@@ -1,0 +1,25 @@
+[package]
+name = "gbnet_unity"
+version = "0.1.0"
+edition = "2021"
+authors = ["Gondola Bros"]
+description = "Unity bindings for GBNet high-performance networking"
+
+[lib]
+name = "gbnet_unity"
+# This tells Rust to build a C-compatible dynamic library
+crate-type = ["cdylib"]
+
+[dependencies]
+# Use our local gbnet
+gbnet = { path = "../gbnet" }
+
+# We'll need these for FFI
+libc = "0.2"
+
+# For error handling across FFI
+once_cell = "1.19"
+
+[dev-dependencies]
+# For testing our FFI functions
+serial_test = "3.0"
