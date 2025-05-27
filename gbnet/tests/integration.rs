@@ -2,6 +2,7 @@ use gbnet::{
     UdpSocket, Packet, PacketHeader, PacketType,
     Connection, NetworkConfig,
     BitSerialize, BitDeserialize,
+    BitBuffer,  // Add this line
 };
 use gbnet_macros::NetworkSerialize;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
