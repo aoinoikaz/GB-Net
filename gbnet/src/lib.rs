@@ -1,3 +1,5 @@
+extern crate self as gbnet;
+
 // Core networking modules
 pub mod socket;
 pub mod packet;
