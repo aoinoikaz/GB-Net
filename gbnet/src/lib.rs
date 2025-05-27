@@ -1,5 +1,3 @@
-// lib.rs - Main library file for gbnet
-
 // Core networking modules
 pub mod socket;
 pub mod packet;
@@ -7,7 +5,7 @@ pub mod connection;
 pub mod reliability;
 pub mod channel;
 pub mod config;
-pub mod serialize;
+pub mod serialize;  // Make serialize module public
 
 // Test modules (only compiled during testing)
 #[cfg(test)]
